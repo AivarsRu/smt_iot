@@ -52,6 +52,18 @@ INSTALLED_APPS = [
     "channels",
 
     "apps.core",
+    "apps.accounts",
+    "apps.assets",
+    "apps.iot_config",
+    "apps.simulator",
+    "apps.mqtt_ingestion",
+    "apps.telemetry",
+    "apps.digital_twin",
+    "apps.analytics",
+    "apps.events",
+    "apps.api",
+    "apps.dashboard",
+    "apps.reports",
 ]
 
 MIDDLEWARE = [
@@ -116,6 +128,18 @@ CHANNEL_LAYERS = {
         },
     },
 }
+
+# MQTT worker settings
+MQTT_HOST = env("MQTT_HOST", default="mqtt")
+MQTT_PORT = env.int("MQTT_PORT", default=1883)
+MQTT_USERNAME = env("MQTT_USERNAME", default="")
+MQTT_PASSWORD = env("MQTT_PASSWORD", default="")
+MQTT_KEEPALIVE_SECONDS = env.int("MQTT_KEEPALIVE_SECONDS", default=60)
+MQTT_CLIENT_ID = env("MQTT_CLIENT_ID", default="smt-django-mqtt-worker")
+MQTT_SUBSCRIBE_TOPICS = env.list(
+    "MQTT_SUBSCRIBE_TOPICS",
+    default=["smt/+/+/+/+/telemetry"],
+)
 
 
 # Password validation
