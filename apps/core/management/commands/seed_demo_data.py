@@ -308,6 +308,59 @@ class Command(BaseCommand):
         )
         track(created)
 
+        # ── Simulator configuration ───────────────────────────────────────────
+
+        from apps.simulator.models import SimulatorMetricProfile, SimulatorScenario, SimulatorScenarioDevice
+
+        scenario, created = SimulatorScenario.objects.update_or_create(
+            code="default_demo",
+            defaults={
+                "name": "Default Demo Scenario",
+                "description": "Demonstration simulator scenario for charger-001.",
+                "site": site,
+                "default_status": "charging",
+                "interval_seconds": 60,
+                "is_active": True,
+            },
+        )
+        track(created)
+
+        scenario_device, created = SimulatorScenarioDevice.objects.update_or_create(
+            scenario=scenario,
+            device=device,
+            defaults={
+                "device_profile": profile,
+                "is_enabled": True,
+                "sort_order": 1,
+            },
+        )
+        track(created)
+
+        DEMO_METRIC_PROFILES = [
+            {"key": "voltage_v",       "base": 52.0, "min": 48.0,  "max": 58.0,  "noise": 0.5},
+            {"key": "current_a",       "base": 1.8,  "min": 0.0,   "max": 5.0,   "noise": 0.2},
+            {"key": "power_w",         "base": 90.0, "min": 0.0,   "max": 150.0, "noise": 5.0},
+            {"key": "temperature_c",   "base": 30.0, "min": -20.0, "max": 70.0,  "noise": 2.0},
+            {"key": "battery_soc_pct", "base": 80.0, "min": 0.0,   "max": 100.0, "noise": 1.5},
+        ]
+
+        for sort_idx, mp_data in enumerate(DEMO_METRIC_PROFILES, start=1):
+            metric_obj, _ = metric_objects[mp_data["key"]]
+            _, created = SimulatorMetricProfile.objects.update_or_create(
+                scenario_device=scenario_device,
+                metric=metric_obj,
+                defaults={
+                    "base_value": mp_data["base"],
+                    "min_value": mp_data["min"],
+                    "max_value": mp_data["max"],
+                    "noise_amplitude": mp_data["noise"],
+                    "generation_mode": "random_noise",
+                    "is_enabled": True,
+                    "sort_order": sort_idx,
+                },
+            )
+            track(created)
+
         self.stdout.write(
             self.style.SUCCESS(
                 f"seed_demo_data complete: {created_count} created, {updated_count} updated."

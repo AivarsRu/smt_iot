@@ -129,6 +129,9 @@ CHANNEL_LAYERS = {
     },
 }
 
+# Environment tag used in MQTT topic segments: smt/{SMT_ENV}/...
+SMT_ENV = env("SMT_ENV", default="dev")
+
 # MQTT worker settings
 MQTT_HOST = env("MQTT_HOST", default="mqtt")
 MQTT_PORT = env.int("MQTT_PORT", default=1883)
@@ -140,6 +143,10 @@ MQTT_SUBSCRIBE_TOPICS = env.list(
     "MQTT_SUBSCRIBE_TOPICS",
     default=["smt/+/+/+/+/telemetry"],
 )
+
+# MQTT simulator publisher credentials (separate from the worker subscriber)
+MQTT_SIMULATOR_USERNAME = env("MQTT_SIMULATOR_USERNAME", default="smt_simulator")
+MQTT_SIMULATOR_PASSWORD = env("MQTT_SIMULATOR_PASSWORD", default="")
 
 
 # Password validation
