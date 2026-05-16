@@ -1,0 +1,50 @@
+services:
+  web:
+    build:
+      context: .
+    container_name: smt_web_prod
+    command: daphne -b 0.0.0.0 -p 8000 config.asgi:application
+    env_file:
+      - .env.prod
+    volumes:
+      - static_volume:/app/staticfiles
+      - media_volume:/app/media
+    depends_on:
+      - redis
+      - mqtt
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: smt_redis_prod
+    restart: unless-stopped
+
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: smt_mqtt_prod
+    volumes:
+      - ./docker/mosquitto/config/mosquitto.prod.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./docker/mosquitto/config/passwords:/mosquitto/config/passwords:ro
+      - ./docker/mosquitto/config/acl:/mosquitto/config/acl:ro
+      - ./docker/mosquitto/data:/mosquitto/data
+      - ./docker/mosquitto/log:/mosquitto/log
+    expose:
+      - "1883"
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: smt_nginx_prod
+    volumes:
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - static_volume:/app/staticfiles:ro
+      - media_volume:/app/media:ro
+    ports:
+      - "80:80"
+    depends_on:
+      - web
+    restart: unless-stopped
+
+volumes:
+  static_volume:
+  media_volume:

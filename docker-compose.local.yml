@@ -1,0 +1,36 @@
+services:
+  web:
+    build:
+      context: .
+    container_name: smt_web_local
+    command: python manage.py runserver 0.0.0.0:8000
+    env_file:
+      - .env.local
+    volumes:
+      - .:/app
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      - redis
+      - mqtt
+
+  redis:
+    image: redis:7-alpine
+    container_name: smt_redis_local
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: smt_mqtt_local
+    volumes:
+      - ./docker/mosquitto/config/mosquitto.local.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./docker/mosquitto/config/passwords:/mosquitto/config/passwords:ro
+      - ./docker/mosquitto/config/acl:/mosquitto/config/acl:ro
+      - ./docker/mosquitto/data:/mosquitto/data
+      - ./docker/mosquitto/log:/mosquitto/log
+    ports:
+      - "127.0.0.1:1883:1883"
+
+volumes:
+  smt_pgdata_local:

@@ -1,0 +1,7 @@
+user smt_ingestion
+topic read smt/#
+
+user smt_simulator
+topic write smt/dev/+/+/+/telemetry
+topic write smt/dev/+/+/+/status
+topic write smt/dev/+/+/+/event
