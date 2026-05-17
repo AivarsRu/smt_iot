@@ -95,41 +95,86 @@ http://localhost:8000/dashboard/
 - Ja API atgriež tukšu sarakstu (piem., nav notikumu vai nav simulatora palaidienu), sadaļa rāda “Nav neseno X” paziņojumu.
 - Stack trace izvades **nav atspoguļotas** UI — pārlūka konsolē redzami tikai pamata HTTP statusi.
 
+## Aktīva detail lapa (`/dashboard/assets/{kods-vai-uuid}/`)
+
+Phase 7, Task 2 pievienoja per-aktīva detail lapu. Tā ir tieši tādā pašā stilā kā pārskata lapa: server-side renderē tikai šablonu un padod API URL adreses, bet visus datus klients ielādē ar `fetch()`.
+
+### Kā atvērt
+
+Vienā no diviem veidiem:
+
+1. No pārskata lapas: `/dashboard/` aktīvu tabulā kolonnā **Detaļas** noklikšķiniet uz "Atvērt".
+2. Tieši pa URL — gan ar aktīva kodu, gan ar UUID:
+
+   ```
+   http://localhost:8000/dashboard/assets/charger-001/
+   http://localhost:8000/dashboard/assets/9ab5e9e3-1392-4045-bc89-c8b6c49590e7/
+   ```
+
+`IdOrCodeLookupMixin` API līmenī jau atbalsta abus, tāpēc dashboard ceļa segments tiek tieši padots tālāk uz `/api/assets/<segment>/...`.
+
+### Ko detail lapa rāda
+
+- **Aktīva identitāte** — kods, nosaukums, vieta, tips, statusa žetons, pēdējoreiz redzēts, pēdējais mērījums, aktīvas anomālijas;
+- **Digitālais dvīnis (state cards)** — temperatūra, spriegums, strāva, jauda, baterija (SoC %), anomāliju skaits, vai šobrīd ir aktīva anomālija;
+- **Mērījumu diagrammas** — vienkāršas inline SVG līniju diagrammas četrām metrikām: `temperature_c`, `voltage_v`, `power_w`, `battery_soc_pct`. Katra diagramma rāda pēdējos līdz 100 mērījumus, jaunāko vērtību ar laiku, un min/max diapazonu apakšā;
+- **Pēdējie mērījumi** — tabula ar metriku, vērtību, vienību, laiku, kvalitāti;
+- **Notikumi** — tabula ar tipu, smaguma žetonu, statusa žetonu, virsrakstu, atklāšanas laiku un aizvēršanas laiku;
+- **Pēdējais MQTT ziņojums** — diagnostikas panelis ar `message_id`, `processing_status`, `received_at`, `topic`. Pilns payload netiek atspoguļots — tam kalpo `/api/raw-messages/`.
+
+### Kurus API galapunktus detail lapa izmanto
+
+- `GET /api/assets/{kods-vai-uuid}/summary/` — virsraksts, state cards, latest raw message;
+- `GET /api/assets/{kods-vai-uuid}/measurements/?limit=20` — pēdējo mērījumu tabula;
+- `GET /api/assets/{kods-vai-uuid}/events/?limit=20` — notikumu tabula;
+- `GET /api/assets/{kods-vai-uuid}/measurements/?metric={metric_key}&limit=100` — pa vienai katras diagrammas datu kopai (`temperature_c`, `voltage_v`, `power_w`, `battery_soc_pct`).
+
+### Atsvaidzināšana
+
+- Galvenes **Atsvaidzināt** poga atkārtoti ielādē visas sekcijas (kopsavilkumu, mērījumu tabulu, notikumus un visas četras diagrammas paralēli).
+- **Auto 30 s** izvēles rūtiņa darbojas tāpat kā pārskata lapā un izmanto to pašu globālo loģiku.
+
+### Kļūdu, ielādes un tukšu datu apstrāde
+
+- Katra sadaļa atsevišķi rāda "Ielādē…" / kļūdas / tukša stāvokļa paziņojumu.
+- Ja `/api/assets/.../summary/` atgriež `404`, lapas augšā parādās lapas līmeņa kļūda **"Aktīvs ‘{kods}’ netika atrasts."** ar saiti atpakaļ uz `/dashboard/`. Pārējās sadaļas paliek tukšas — netiek mēģināts ielādēt mērījumus vai notikumus zudušam aktīvam.
+- Ja diagrammas API atbild ar tukšu sarakstu, attiecīgā kartiņa rāda "Nav datu." nevis tukšu SVG.
+
+### Atgriešanās uz pārskatu
+
+Lapas augšā ir links **← Atpakaļ uz pārskatu**, kas ved uz `/dashboard/`.
+
 ## Kas šajā uzdevumā **nav** ieviests
 
-Šis uzdevums apzināti ir ierobežots dashboard "shell" un pārskata lapas līmenī. Šie elementi paliek nākamajiem uzdevumiem:
+Šie elementi apzināti paliek nākamajiem uzdevumiem:
 
-- pilnas aktīva detail lapas (`/dashboard/assets/<code>/`);
-- diagrammas (līniju diagrammas mērījumiem, joslu diagrammas notikumiem);
-- WebSocket / Django Channels reāllaika atjauninājumi — pašlaik datu atsvaidzināšana ir tikai manuāla vai 30 s polls;
+- WebSocket / Django Channels reāllaika atjauninājumi — datu atsvaidzināšana ir tikai manuāla vai 30 s polls;
 - simulatora vadības pogas (`start`/`stop`) — tas joprojām notiek caur `python manage.py run_simulator ...`;
 - rakstīšanas darbības no dashboard — visi backend darījumi notiek caur Django administrāciju, simulatoru, MQTT ingestion vai management komandām;
 - lietotāju lomu pārvaldība un konkrētas atļaujas dashboard lapām;
-- vairākvalodu UI — pašlaik UI virsraksti ir latviešu valodā, jo dokumentācija arī ir latviski.
+- vairākvalodu UI — pašlaik UI virsraksti ir latviešu valodā, jo dokumentācija arī ir latviski;
+- pilna payload `RawMessage` skatīšana detail lapā — pieejama caur `/api/raw-messages/{id}/`;
+- papildu metriku diagrammas (piem., `current_a`) — pievienojams nākotnē, papildinot `ASSET_DETAIL_CHART_METRICS` `apps/dashboard/views.py`.
 
 ## Manuāla verifikācija
 
-### Pārbaudīt `/dashboard/` no Django Test Client
+### Pārbaudīt `/dashboard/` un detail lapu no Django Test Client
 
 ```bash
 docker compose -f docker-compose.local.yml exec web python manage.py shell -c "
 from django.test import Client
 c = Client(SERVER_NAME='localhost')
-r = c.get('/dashboard/')
-print('status:', r.status_code)
-print('contains title:', 'SMT Digital Solution' in r.content.decode())
-print('contains refresh:', 'data-role=\"refresh-btn\"' in r.content.decode())
-print('contains overview API:', '/api/overview/' in r.content.decode())
+for path in ['/dashboard/', '/dashboard/assets/charger-001/']:
+    r = c.get(path)
+    print(path, r.status_code, 'SMT Digital Solution' in r.content.decode())
 "
 ```
 
 Sagaidāmais izvads:
 
 ```
-status: 200
-contains title: True
-contains refresh: True
-contains overview API: True
+/dashboard/ 200 True
+/dashboard/assets/charger-001/ 200 True
 ```
 
 ### Pārbaudīt no resursdatora
@@ -150,11 +195,27 @@ ok
 
 ### Pārbaudīt UI pārlūkprogrammā
 
+#### Pārskata lapa
+
 Atveriet `http://localhost:8000/dashboard/`. Sagaidāmais skats:
 
 - lapa ielādējas bez servera kļūdas;
 - redzamas piecas sadaļas (pārskata kartiņas, aktīvu tabula, notikumi, telemetrija, simulators);
 - pēc dažām sekundēm sadaļas pāriet no “Ielādē…” uz reāliem datiem;
+- aktīvu tabulas kolonnā **Detaļas** ir saite "Atvērt" — klikšķis aizved uz `/dashboard/assets/{kods}/`;
 - **Atsvaidzināt** poga atkārtoti ielādē visas sadaļas;
 - pārlūka konsole nerāda kritiskas JavaScript kļūdas;
 - ja kāds API galapunkts atbild ar kļūdu, attiecīgā sadaļa parāda lasāmu paziņojumu, neapstājot pārējo lapu.
+
+#### Aktīva detail lapa
+
+Atveriet `http://localhost:8000/dashboard/assets/charger-001/`. Sagaidāmais skats:
+
+- redzams **← Atpakaļ uz pārskatu** links lapas augšā;
+- aktīva identitātes kartiņas rāda kodu, nosaukumu, statusu utt.;
+- digitālā dvīņa state cards rāda T, U, I, P, SoC, anomāliju skaitu;
+- četras SVG diagrammas (`temperature_c`, `voltage_v`, `power_w`, `battery_soc_pct`) parādās; ja konkrētai metrikai nav datu — kartiņa saka "Nav datu.";
+- pēdējo mērījumu un notikumu tabulas pildās;
+- `Pēdējais MQTT ziņojums` panelis rāda `message_id`, `processing_status`, `received_at`, `topic`;
+- nezināms kods (piem., `/dashboard/assets/does-not-exist/`) atver lapu, bet rāda sarkanu paziņojumu **"Aktīvs ‘does-not-exist’ netika atrasts."** ar saiti atpakaļ uz pārskatu;
+- **Atsvaidzināt** atkārtoti ielādē kopsavilkumu, mērījumus, notikumus un visas četras diagrammas paralēli.

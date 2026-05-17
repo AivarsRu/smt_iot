@@ -1,0 +1,101 @@
+{% extends "dashboard/base.html" %}
+{% load static %}
+
+{% block title %}Aktīvs {{ asset_identifier }} — SMT Digital Solution{% endblock %}
+
+{% block content %}
+  <p class="back-link">
+    <a href="{% url 'dashboard:overview' %}" rel="noopener">← Atpakaļ uz pārskatu</a>
+  </p>
+
+  {# ── Page-level error (e.g. asset not found) ─────────────────────── #}
+  <div data-role="page-error" hidden></div>
+
+  {# ── Asset identity header ────────────────────────────────────────── #}
+  <section class="dashboard-section" aria-labelledby="asset-heading">
+    <div class="section-header">
+      <h2 id="asset-heading" class="section-header__title"
+          data-role="asset-title">Aktīvs: {{ asset_identifier }}</h2>
+      <p class="section-header__hint">
+        Dati nāk no <code>/api/assets/{kods-vai-uuid}/summary/</code>.
+      </p>
+    </div>
+    <div class="asset-identity" data-role="asset-identity">
+      <div class="state state--loading" data-role="identity-state">Ielādē…</div>
+    </div>
+  </section>
+
+  {# ── Digital twin state cards ─────────────────────────────────────── #}
+  <section class="dashboard-section" aria-labelledby="state-heading">
+    <div class="section-header">
+      <h2 id="state-heading" class="section-header__title">Digitālais dvīnis</h2>
+      <p class="section-header__hint">Pēdējais zināmais aktīva stāvoklis.</p>
+    </div>
+    <div class="card-grid" data-role="state-cards">
+      <div class="state state--loading" data-role="state-cards-state">Ielādē…</div>
+    </div>
+  </section>
+
+  {# ── Charts ──────────────────────────────────────────────────────── #}
+  <section class="dashboard-section" aria-labelledby="charts-heading">
+    <div class="section-header">
+      <h2 id="charts-heading" class="section-header__title">Mērījumu diagrammas</h2>
+      <p class="section-header__hint">
+        Pēdējie 100 mērījumi katrai metrikai. Avots:
+        <code>/api/assets/{kods-vai-uuid}/measurements/?metric=…</code>.
+      </p>
+    </div>
+    <div class="chart-grid" data-role="charts-grid">
+      <div class="state state--loading" data-role="charts-state">Ielādē…</div>
+    </div>
+  </section>
+
+  {# ── Latest measurements table ────────────────────────────────────── #}
+  <section class="dashboard-section" aria-labelledby="measurements-heading">
+    <div class="section-header">
+      <h2 id="measurements-heading" class="section-header__title">
+        Pēdējie mērījumi
+      </h2>
+      <p class="section-header__hint">
+        Avots: <code>/api/assets/{kods-vai-uuid}/measurements/?limit=20</code>.
+      </p>
+    </div>
+    <div data-role="measurements-wrapper">
+      <div class="state state--loading" data-role="measurements-state">Ielādē…</div>
+    </div>
+  </section>
+
+  {# ── Recent events ────────────────────────────────────────────────── #}
+  <section class="dashboard-section" aria-labelledby="events-heading">
+    <div class="section-header">
+      <h2 id="events-heading" class="section-header__title">Notikumi</h2>
+      <p class="section-header__hint">
+        Avots: <code>/api/assets/{kods-vai-uuid}/events/?limit=20</code>.
+      </p>
+    </div>
+    <div data-role="events-wrapper">
+      <div class="state state--loading" data-role="events-state">Ielādē…</div>
+    </div>
+  </section>
+
+  {# ── Latest raw message ───────────────────────────────────────────── #}
+  <section class="dashboard-section" aria-labelledby="raw-heading">
+    <div class="section-header">
+      <h2 id="raw-heading" class="section-header__title">Pēdējais MQTT ziņojums</h2>
+      <p class="section-header__hint">
+        Diagnostikai. Pilns payload netiek attēlots — skat. <code>/api/raw-messages/</code>.
+      </p>
+    </div>
+    <div class="diagnostic-panel" data-role="raw-panel">
+      <div class="state state--loading" data-role="raw-state">Ielādē…</div>
+    </div>
+  </section>
+{% endblock %}
+
+{% block dashboard_config %}
+  {{ asset_detail_config|json_script:"asset-detail-config" }}
+{% endblock %}
+
+{% block extra_scripts %}
+  <script src="{% static 'dashboard/dashboard.js' %}" defer></script>
+{% endblock %}

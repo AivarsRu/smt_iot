@@ -16,4 +16,9 @@ app_name = "dashboard"
 urlpatterns = [
     path("", views.OverviewView.as_view(), name="overview"),
     path("health/", views.health_view, name="health"),
+    path(
+        "assets/<str:asset_identifier>/",
+        views.AssetDetailView.as_view(),
+        name="asset-detail",
+    ),
 ]
