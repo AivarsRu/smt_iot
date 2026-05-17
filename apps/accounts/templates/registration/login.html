@@ -1,0 +1,74 @@
+{% load static %}
+<!doctype html>
+<html lang="lv">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pieslēgties — SMT Digital Solution</title>
+  <link rel="stylesheet" href="{% static 'dashboard/dashboard.css' %}">
+</head>
+<body>
+  <header class="page-header" role="banner">
+    <div class="page-container">
+      <div class="page-header__brand">
+        <h1 class="page-header__title">SMT Digital Solution</h1>
+        <p class="page-header__subtitle">
+          IoT infrastructure monitoring and digital twin prototype
+        </p>
+      </div>
+    </div>
+  </header>
+
+  <main class="page-container" role="main">
+    <section class="dashboard-section" aria-labelledby="login-heading">
+      <div class="section-header">
+        <h2 id="login-heading" class="section-header__title">Operatora pieslēgšanās</h2>
+        <p class="section-header__hint">
+          Lietotājus pārvalda
+          <a href="{% url 'admin:index' %}">Django administrācijā</a>.
+        </p>
+      </div>
+
+      <form method="post" class="auth-form" novalidate>
+        {% csrf_token %}
+
+        {% if form.non_field_errors %}
+          <div class="state state--error" data-role="login-error">
+            {% for error in form.non_field_errors %}{{ error }}{% endfor %}
+          </div>
+        {% endif %}
+
+        <div class="form-field">
+          <label for="{{ form.username.id_for_label }}">Lietotājvārds</label>
+          {{ form.username }}
+          {% if form.username.errors %}
+            <p class="form-field__error">{{ form.username.errors|join:" " }}</p>
+          {% endif %}
+        </div>
+
+        <div class="form-field">
+          <label for="{{ form.password.id_for_label }}">Parole</label>
+          {{ form.password }}
+          {% if form.password.errors %}
+            <p class="form-field__error">{{ form.password.errors|join:" " }}</p>
+          {% endif %}
+        </div>
+
+        {# Preserve ``?next=`` so post-login redirects honour deep links. #}
+        <input type="hidden" name="next" value="{{ next }}">
+
+        <div class="form-actions">
+          <button type="submit" class="btn btn--primary">Pieslēgties</button>
+          <a href="{% url 'core:welcome' %}" class="btn">Atpakaļ</a>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <footer class="page-footer">
+    <div class="page-container">
+      <p>© SMT Digital Solution.</p>
+    </div>
+  </footer>
+</body>
+</html>

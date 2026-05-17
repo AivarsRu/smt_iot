@@ -1,0 +1,230 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Konfigurēt {{ asset.code }} — SMT Digital Solution{% endblock %}
+
+{% block header_meta %}{# Static page — hide auto-refresh controls. #}{% endblock %}
+
+{% block content %}
+  <p class="back-link">
+    <a href="{% url 'dashboard:assets-list' %}" rel="noopener">← Atpakaļ uz aktīvu sarakstu</a>
+  </p>
+
+  <section class="dashboard-section" aria-labelledby="configure-heading">
+    <div class="section-header">
+      <h2 id="configure-heading" class="section-header__title">
+        Aktīva konfigurācija
+      </h2>
+      <p class="section-header__hint">
+        Šī ir <strong>konfigurācijas</strong> lapa.
+        <a href="{{ detail_url }}">Monitoringa skats →</a>
+      </p>
+    </div>
+
+    {# ── Asset identity ───────────────────────────────────────── #}
+    <div class="asset-identity" data-role="asset-identity">
+      <div class="identity-item">
+        <span class="identity-item__label">Kods</span>
+        <span class="identity-item__value" data-role="asset-code">{{ asset.code }}</span>
+      </div>
+      <div class="identity-item">
+        <span class="identity-item__label">Nosaukums</span>
+        <span class="identity-item__value">{{ asset.name }}</span>
+      </div>
+      <div class="identity-item">
+        <span class="identity-item__label">Objekts</span>
+        <span class="identity-item__value">{{ site.code }} — {{ site.name }}</span>
+      </div>
+      <div class="identity-item">
+        <span class="identity-item__label">Tips</span>
+        <span class="identity-item__value">{{ asset.get_asset_type_display }}</span>
+      </div>
+      <div class="identity-item">
+        <span class="identity-item__label">Statuss</span>
+        <span class="identity-item__value">
+          <span class="badge badge--status-{{ asset.status }}">
+            {{ asset.get_status_display }}
+          </span>
+        </span>
+      </div>
+    </div>
+  </section>
+
+  {# ── Stage 2 hub ─────────────────────────────────────────────── #}
+  <section class="dashboard-section" aria-labelledby="devices-heading">
+    <div class="toolbar">
+      <div class="section-header">
+        <h3 id="devices-heading" class="section-header__title">
+          2. solis — ierīces ({{ device_rows|length }})
+        </h3>
+        <p class="section-header__hint">
+          Pievienojiet jaunu ierīci vai piesaistiet esošu šim aktīvam.
+        </p>
+      </div>
+      <div>
+        <a class="btn btn--primary"
+           href="{{ device_create_url }}"
+           data-role="device-create-link">+ Izveidot jaunu ierīci</a>
+        <a class="btn{% if attachable_device_count == 0 %} btn--disabled{% endif %}"
+           href="{{ device_attach_url }}"
+           data-role="device-attach-link"
+           {% if attachable_device_count == 0 %}aria-disabled="true"{% endif %}>
+          Piesaistīt esošu ({{ attachable_device_count }})
+        </a>
+      </div>
+    </div>
+
+    {% if device_rows %}
+      {% for row in device_rows %}
+        <div class="config-card" data-role="device-card" data-device-uid="{{ row.device.device_uid }}">
+          <div class="config-card__header">
+            <div>
+              <h4 class="config-card__title">{{ row.device.name }}</h4>
+              <p class="config-card__sub">
+                <code>{{ row.device.device_uid }}</code>
+                · {{ row.device.device_type|default:"—" }}
+                · <span class="badge badge--status-{{ row.device.status }}">{{ row.device.get_status_display }}</span>
+              </p>
+            </div>
+            <div class="config-card__actions">
+              <a class="btn btn--primary"
+                 href="{{ row.add_sensor_url }}"
+                 data-role="sensor-create-link">+ Pievienot sensoru</a>
+            </div>
+          </div>
+
+          {# ── Stage 3 — sensors of this device ─────────────── #}
+          {% if row.sensor_rows %}
+            <table class="data-table" data-role="sensors-table">
+              <thead>
+                <tr>
+                  <th>Sensors</th>
+                  <th>Tips</th>
+                  <th>Metrikas</th>
+                  <th>Darbības</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for sr in row.sensor_rows %}
+                  <tr data-role="sensor-row" data-sensor-code="{{ sr.sensor.code }}">
+                    <td>
+                      <code>{{ sr.sensor.code }}</code><br>
+                      <small>{{ sr.sensor.name }}</small>
+                    </td>
+                    <td>{{ sr.sensor.sensor_type|default:"—" }}</td>
+                    <td>
+                      {% if sr.sensor_metrics %}
+                        <ul class="inline-list">
+                          {% for sm in sr.sensor_metrics %}
+                            <li>
+                              <code>{{ sm.metric_key }}</code>
+                              {% if sm.metric_unit %}({{ sm.metric_unit }}){% endif %}
+                              {% if sm.is_required %}<span class="badge">required</span>{% endif %}
+                            </li>
+                          {% endfor %}
+                        </ul>
+                      {% else %}
+                        <span class="form-field__hint">Nav metriku — pievienojiet pirmo.</span>
+                      {% endif %}
+                    </td>
+                    <td class="row-actions">
+                      <a href="{{ sr.add_metric_url }}"
+                         data-role="metric-create-link">+ Metrika / slieksnis</a>
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          {% else %}
+            <div class="state state--empty">
+              Šai ierīcei vēl nav sensoru.
+              <a href="{{ row.add_sensor_url }}">Pievienot pirmo sensoru →</a>
+            </div>
+          {% endif %}
+        </div>
+      {% endfor %}
+    {% else %}
+      <div class="state state--empty" data-role="devices-empty">
+        Šim aktīvam vēl nav piesaistītas ierīces.
+        <a href="{{ device_create_url }}">Izveidot pirmo ierīci →</a>
+      </div>
+    {% endif %}
+  </section>
+
+  {# ── Threshold rules ─────────────────────────────────────────── #}
+  <section class="dashboard-section" aria-labelledby="rules-heading">
+    <div class="section-header">
+      <h3 id="rules-heading" class="section-header__title">
+        Sliekšņa noteikumi ({{ threshold_rules|length }})
+      </h3>
+      <p class="section-header__hint">
+        Šim aktīvam piesaistīti sliekšņa noteikumi. Jaunus var pievienot
+        no katra sensora "+ Metrika / slieksnis" saites.
+      </p>
+    </div>
+
+    {% if threshold_rules %}
+      <table class="data-table" data-role="rules-table">
+        <thead>
+          <tr>
+            <th>Kods</th>
+            <th>Nosaukums</th>
+            <th>Metrika</th>
+            <th>Tvērums</th>
+            <th>Mērķis</th>
+            <th class="numeric">Lower</th>
+            <th class="numeric">Upper</th>
+            <th>Severity</th>
+            <th>Aktīvs</th>
+            <th>Darbības</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in threshold_rules %}
+            {% with rule=row.rule %}
+              <tr data-role="rule-row" data-rule-code="{{ rule.code }}">
+                <td><code>{{ rule.code }}</code></td>
+                <td>{{ rule.name }}</td>
+                <td><code>{{ rule.metric.key }}</code></td>
+                <td>
+                  <span class="badge badge--scope-{{ rule.scope_level }}">
+                    {{ rule.get_scope_level_display }}
+                  </span>
+                </td>
+                <td>
+                  {% if rule.scope_level == "sensor" and rule.sensor %}
+                    <code>{{ rule.sensor.code }}</code>
+                  {% elif rule.scope_level == "device" and rule.device %}
+                    <code>{{ rule.device.device_uid }}</code>
+                  {% elif rule.scope_level == "asset" and rule.asset %}
+                    <code>{{ rule.asset.code }}</code>
+                  {% elif rule.scope_level == "site" and rule.site %}
+                    <code>{{ rule.site.code }}</code>
+                  {% else %}—{% endif %}
+                </td>
+                <td class="numeric">{{ rule.lower_bound|default_if_none:"—" }}</td>
+                <td class="numeric">{{ rule.upper_bound|default_if_none:"—" }}</td>
+                <td><span class="badge badge--severity-{{ rule.severity }}">{{ rule.severity }}</span></td>
+                <td>
+                  {% if rule.is_enabled %}
+                    <span class="badge badge--ok">Jā</span>
+                  {% else %}
+                    <span class="badge badge--muted">Nē</span>
+                  {% endif %}
+                </td>
+                <td>
+                  <a class="btn btn--small"
+                     href="{{ row.edit_url }}"
+                     data-role="rule-edit-link">Rediģēt</a>
+                </td>
+              </tr>
+            {% endwith %}
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <div class="state state--empty" data-role="rules-empty">
+        Šim aktīvam vēl nav sliekšņa noteikumu.
+      </div>
+    {% endif %}
+  </section>
+{% endblock %}

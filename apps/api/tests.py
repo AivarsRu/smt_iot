@@ -76,6 +76,45 @@ class CoreListEndpointsTest(_ApiBase):
         self.assertEqual(resp.status_code, 200)
         self.assertIsInstance(resp.json(), list)
 
+    def test_sensors_expose_sensor_metrics(self):
+        """The nested ``sensor_metrics`` field describes what a Sensor can produce."""
+        resp = self.client.get("/api/sensors/")
+        self.assertEqual(resp.status_code, 200)
+        sensors = resp.json()
+        self.assertGreaterEqual(len(sensors), 1)
+        row = sensors[0]
+        self.assertIn("sensor_metrics", row)
+        self.assertIsInstance(row["sensor_metrics"], list)
+        # The demo seed wires every metric onto the demo sensor.
+        keys = {sm["metric_key"] for sm in row["sensor_metrics"]}
+        self.assertIn("temperature_c", keys)
+        self.assertIn("voltage_v", keys)
+
+    def test_sensor_metrics_endpoint_lists_demo_rows(self):
+        resp = self.client.get("/api/sensor-metrics/")
+        self.assertEqual(resp.status_code, 200)
+        rows = resp.json()
+        self.assertGreaterEqual(len(rows), 5)
+        keys = {row["metric_key"] for row in rows}
+        self.assertIn("temperature_c", keys)
+        self.assertIn("battery_soc_pct", keys)
+
+    def test_sensor_metrics_filter_by_metric_key(self):
+        resp = self.client.get("/api/sensor-metrics/?metric=temperature_c")
+        self.assertEqual(resp.status_code, 200)
+        rows = resp.json()
+        self.assertGreaterEqual(len(rows), 1)
+        for row in rows:
+            self.assertEqual(row["metric_key"], "temperature_c")
+
+    def test_sensor_metrics_filter_by_device_uid(self):
+        resp = self.client.get("/api/sensor-metrics/?device=charger-001")
+        self.assertEqual(resp.status_code, 200)
+        rows = resp.json()
+        self.assertGreaterEqual(len(rows), 1)
+        for row in rows:
+            self.assertEqual(row["device_uid"], "charger-001")
+
     def test_metrics_lists_demo_metrics(self):
         resp = self.client.get("/api/metrics/")
         self.assertEqual(resp.status_code, 200)
@@ -99,6 +138,20 @@ class CoreListEndpointsTest(_ApiBase):
         self.assertEqual(resp.status_code, 200)
         codes = [row["code"] for row in resp.json()]
         self.assertIn("temperature_c_high_warning", codes)
+
+    def test_threshold_rules_expose_scope_level_and_sensor_code(self):
+        # Phase 7 bugfix: the serializer must surface scope_level so the
+        # operator UI and downstream consumers can see exactly which
+        # scope each rule binds to. The seeded demo rules are sensor-
+        # scoped and pin to the ``main`` sensor of ``charger-001``.
+        resp = self.client.get("/api/threshold-rules/")
+        self.assertEqual(resp.status_code, 200)
+        row = next(
+            r for r in resp.json()
+            if r["code"] == "temperature_c_high_warning"
+        )
+        self.assertEqual(row["scope_level"], "sensor")
+        self.assertEqual(row["sensor_code"], "main")
 
     def test_simulator_scenarios_endpoint_lists_default_demo(self):
         resp = self.client.get("/api/simulator-scenarios/")
@@ -444,6 +497,7 @@ class ReadOnlyEnforcementTest(_ApiBase):
         "/api/assets/",
         "/api/devices/",
         "/api/sensors/",
+        "/api/sensor-metrics/",
         "/api/metrics/",
         "/api/asset-states/",
         "/api/measurements/",
@@ -808,3 +862,193 @@ class AssetSummaryTest(_OverviewBase):
             "/api/assets/charger-001/summary/", data={}, format="json",
         )
         self.assertEqual(resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+
+# ── Phase 7, Task 4A: sensor/metric filter coverage ─────────────────────────
+# Sanity checks for the new ``?sensor=`` and ``?metric=`` filters used by
+# the operator Event/Anomaly review UI. We build a tiny isolated fixture
+# instead of reusing the seed data so the assertions are deterministic
+# (the seed creates one sensor, which would make "filter rejects wrong
+# sensor" trivially true regardless of the filter being applied).
+
+class SensorMetricFilterApiTest(APITestCase):
+
+    @classmethod
+    def setUpTestData(cls):
+        from apps.assets.models import Sensor, SensorMetric
+
+        site = Site.objects.create(code="filter-site", name="Filter Site")
+        asset = Asset.objects.create(site=site, code="filter-asset", name="A")
+        device = Device.objects.create(
+            site=site, asset=asset, device_uid="filter-dev", name="D",
+        )
+        cls.sensor_a = Sensor.objects.create(
+            device=device, code="sensor-aaaa", name="Sensor A",
+        )
+        cls.sensor_b = Sensor.objects.create(
+            device=device, code="sensor-bbbb", name="Sensor B",
+        )
+        cls.metric_temp = MetricDefinition.objects.create(
+            key="filter_temp_c", display_name="T", unit="°C",
+        )
+        cls.metric_volt = MetricDefinition.objects.create(
+            key="filter_volt_v", display_name="V", unit="V",
+        )
+        SensorMetric.objects.create(sensor=cls.sensor_a, metric=cls.metric_temp)
+        SensorMetric.objects.create(sensor=cls.sensor_b, metric=cls.metric_volt)
+
+        now = timezone.now()
+        cls.raw_message = RawMessage.objects.create(
+            source_type=SourceType.MQTT, topic="t",
+            message_id="filter-msg-001", payload={}, device=device, site=site,
+            asset=asset, payload_timestamp=now,
+            processing_status=ProcessingStatus.PARSED,
+        )
+
+        Measurement.objects.create(
+            raw_message=cls.raw_message, site=site, asset=asset, device=device,
+            sensor=cls.sensor_a, metric=cls.metric_temp,
+            timestamp=now, value_float=21.5,
+            quality=MeasurementQuality.GOOD,
+        )
+        Measurement.objects.create(
+            raw_message=cls.raw_message, site=site, asset=asset, device=device,
+            sensor=cls.sensor_b, metric=cls.metric_volt,
+            timestamp=now, value_float=52.1,
+            quality=MeasurementQuality.GOOD,
+        )
+
+        Event.objects.create(
+            event_type=EventType.THRESHOLD_ANOMALY,
+            severity=Severity.WARNING, status=EventStatus.OPEN,
+            site=site, asset=asset, device=device,
+            sensor=cls.sensor_a, metric=cls.metric_temp,
+            title="A temp warning", source="threshold_service",
+            detected_at=now,
+        )
+        Event.objects.create(
+            event_type=EventType.THRESHOLD_ANOMALY,
+            severity=Severity.ERROR, status=EventStatus.OPEN,
+            site=site, asset=asset, device=device,
+            sensor=cls.sensor_b, metric=cls.metric_volt,
+            title="B voltage error", source="threshold_service",
+            detected_at=now,
+        )
+
+    # ── /api/events/ ─────────────────────────────────────────────────────
+
+    def test_events_filter_by_sensor_code(self):
+        resp = self.client.get("/api/events/?sensor=sensor-aaaa")
+        self.assertEqual(resp.status_code, 200)
+        titles = [row["title"] for row in resp.json()]
+        self.assertIn("A temp warning", titles)
+        self.assertNotIn("B voltage error", titles)
+
+    def test_events_filter_by_sensor_uuid(self):
+        resp = self.client.get(
+            f"/api/events/?sensor={self.sensor_b.id}",
+        )
+        self.assertEqual(resp.status_code, 200)
+        titles = [row["title"] for row in resp.json()]
+        self.assertIn("B voltage error", titles)
+        self.assertNotIn("A temp warning", titles)
+
+    def test_events_filter_by_metric_key(self):
+        resp = self.client.get("/api/events/?metric=filter_temp_c")
+        self.assertEqual(resp.status_code, 200)
+        titles = [row["title"] for row in resp.json()]
+        self.assertIn("A temp warning", titles)
+        self.assertNotIn("B voltage error", titles)
+
+    def test_events_filter_by_sensor_and_metric_combined(self):
+        # Combining sensor + metric must AND the predicates.
+        resp = self.client.get(
+            "/api/events/?sensor=sensor-aaaa&metric=filter_volt_v",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), [])
+
+    def test_events_serializer_exposes_sensor_and_metric_codes(self):
+        resp = self.client.get("/api/events/?sensor=sensor-aaaa")
+        self.assertEqual(resp.status_code, 200)
+        row = resp.json()[0]
+        for required in (
+            "sensor", "sensor_code",
+            "metric", "metric_key",
+            "asset_code", "device_uid", "payload",
+            "measurement", "raw_message",
+        ):
+            self.assertIn(required, row)
+
+    # ── /api/measurements/ ───────────────────────────────────────────────
+
+    def test_measurements_filter_by_sensor_code(self):
+        resp = self.client.get("/api/measurements/?sensor=sensor-aaaa")
+        self.assertEqual(resp.status_code, 200)
+        sensor_codes = {row["sensor_code"] for row in resp.json()}
+        self.assertEqual(sensor_codes, {"sensor-aaaa"})
+
+    def test_measurements_filter_by_sensor_and_metric(self):
+        resp = self.client.get(
+            "/api/measurements/?sensor=sensor-aaaa&metric=filter_temp_c",
+        )
+        self.assertEqual(resp.status_code, 200)
+        rows = resp.json()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["sensor_code"], "sensor-aaaa")
+        self.assertEqual(rows[0]["metric_key"], "filter_temp_c")
+
+    def test_measurements_filter_by_asset_code(self):
+        resp = self.client.get("/api/measurements/?asset=filter-asset")
+        self.assertEqual(resp.status_code, 200)
+        rows = resp.json()
+        self.assertGreaterEqual(len(rows), 2)
+        for row in rows:
+            self.assertEqual(row["asset_code"], "filter-asset")
+
+    def test_measurements_datetime_range_filter(self):
+        # ``from`` past the data window → empty. Use UTC ``Z`` suffix so
+        # the ``+`` in ``+00:00`` is not URL-decoded as a space.
+        far_future = (
+            (timezone.now() + timedelta(days=365))
+            .strftime("%Y-%m-%dT%H:%M:%SZ")
+        )
+        resp = self.client.get(
+            "/api/measurements/",
+            data={"sensor": "sensor-aaaa", "from": far_future},
+        )
+        self.assertEqual(resp.status_code, 200, msg=resp.content[:300])
+        self.assertEqual(resp.json(), [])
+
+    def test_measurements_limit_parameter(self):
+        resp = self.client.get("/api/measurements/?limit=1")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.json()), 1)
+
+    # ── 400 invariants for bad input ─────────────────────────────────────
+
+    def test_invalid_event_severity_returns_400(self):
+        resp = self.client.get("/api/events/?severity=bogus")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("severity", resp.json())
+
+    def test_invalid_event_status_returns_400(self):
+        resp = self.client.get("/api/events/?status=bogus")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_invalid_from_datetime_returns_400(self):
+        resp = self.client.get("/api/events/?from=not-a-datetime")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("from", resp.json())
+
+    def test_invalid_to_datetime_returns_400(self):
+        resp = self.client.get(
+            "/api/measurements/?to=also-bad",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("to", resp.json())
+
+    def test_invalid_limit_returns_400(self):
+        resp = self.client.get("/api/events/?limit=99999")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("limit", resp.json())

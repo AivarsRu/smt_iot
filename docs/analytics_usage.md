@@ -17,10 +17,119 @@ Katrs noteikums definē:
 - `metric` — kura `iot_config.MetricDefinition` tiek uzraudzīta;
 - `lower_bound`, `upper_bound` — viena vai abas robežas;
 - `severity` — `warning`, `error` vai `critical`;
-- izvēles tvērumu pēc `site`, `asset` vai `device`;
+- **`scope_level`** — viens no `global`, `site`, `asset`, `device`, `sensor`. Skatīt sadaļu *“Eksplicītā `scope_level` semantika”* zemāk;
+- attiecīgo `site`, `asset`, `device` vai `sensor` FK, atbilstoši `scope_level` izvēlei;
 - `close_when_normal` — vai automātiski slēgt notikumu, kad vērtība atgriežas robežās.
 
 Ja kāda mērījuma vērtība pārkāpj robežu, tiek izveidots vai atjaunināts atvērts `events.Event` ar `event_type="threshold_anomaly"`. Atkārtoti pārkāpumi atjaunina to pašu notikumu, bet **nemaina sākotnējo `detected_at`**, lai operators redzētu, cik ilgi anomālija ir aktīva.
+
+### Eksplicītā `scope_level` semantika (Phase 7 bugfix)
+
+Iepriekšējā ieviesumā `ThresholdRule` ar `NULL` `sensor` (vai `device`/`asset`/`site`) lauku tika uzskatīts par “wildcard”, kas atbilst jebkuram mērījumam ar to pašu metriku. **Tas bija bīstami reālā domēnā**:
+
+- ārtelpu temperatūras sensors: `-40..+40 °C` ir normāls,
+- motora temperatūras sensors: `0..+100 °C` ir normāls.
+
+Ja viens noteikums tika izveidots ar `upper_bound=40 °C` un bez `sensor` FK, tas pārvērtās par neapzinātu globālu noteikumu un nepamatoti aktivizējās uz motora sensora `+80 °C` mērījumu.
+
+No Phase 7 sākot, katram `ThresholdRule` ir obligāts `scope_level` ar precīzu semantiku:
+
+| `scope_level` | Kad piemērojas mērījumam | Obligātais FK | Aizliegtie FK |
+| --- | --- | --- | --- |
+| `global` | jebkuram mērījumam ar to pašu `metric` | — | `site`, `asset`, `device`, `sensor` jābūt tukšiem |
+| `site`   | `measurement.site == rule.site` | `site` | `asset`, `device`, `sensor` jābūt tukšiem |
+| `asset`  | `measurement.asset == rule.asset` | `asset` | `device`, `sensor` jābūt tukšiem; `site`, ja iestatīts, jāatbilst `asset.site` |
+| `device` | `measurement.device == rule.device` | `device` | `sensor` jābūt tukšam; `asset`/`site`, ja iestatīti, jāatbilst `device.asset`/`device.site` |
+| `sensor` | `measurement.sensor == rule.sensor` | `sensor` | augstāka līmeņa FK (`device`/`asset`/`site`), ja iestatīti, jāatbilst sensora ķēdei |
+
+Validācija notiek `ThresholdRule.clean()` (skat. `apps/analytics/models.py`). `clean()`:
+
+1. Pārbauda, ka eksistē vismaz viena robeža un `lower_bound ≤ upper_bound`.
+2. Auto-aizpilda augstāka līmeņa FK no zemāka līmeņa FK (piem., sensor-scope noteikumā aizpilda `device`, `asset`, `site` no `sensor`).
+3. Atsakās saglabāt nekonsekventu rindu (piem., sensor-scope ar `device`, kas neatbilst `sensor.device`).
+4. Sensor-scope noteikumiem pārbauda, vai eksistē `SensorMetric(sensor=…, metric=…, is_active=True)` — bez tā noteikums nekad neaktivizētos un to drošāk noraidīt jau formā.
+
+### Piemēri
+
+```python
+# Sensor-scope: ārtelpu sensors
+ThresholdRule.objects.create(
+    code="outdoor_temp_range",
+    name="Outdoor temperature normal range",
+    metric=temperature_c,
+    scope_level=ThresholdRuleScope.SENSOR,
+    sensor=outdoor_sensor,        # device/asset/site auto-aizpildās
+    lower_bound=-40.0, upper_bound=40.0,
+    severity=Severity.WARNING,
+)
+
+# Sensor-scope: motora sensors uz tās pašas ierīces, tā paša metrika
+ThresholdRule.objects.create(
+    code="motor_temp_range",
+    name="Motor temperature normal range",
+    metric=temperature_c,
+    scope_level=ThresholdRuleScope.SENSOR,
+    sensor=motor_sensor,
+    lower_bound=0.0, upper_bound=100.0,
+)
+
+# Global noteikums (rezervēt apzinātām situācijām!)
+ThresholdRule.objects.create(
+    code="global_temperature_critical",
+    name="Any sensor: temperature above 150 °C",
+    metric=temperature_c,
+    scope_level=ThresholdRuleScope.GLOBAL,
+    upper_bound=150.0,
+    severity=Severity.CRITICAL,
+)
+```
+
+### Notikumu izolēšana pēc tvēruma
+
+Analītikas serviss `apps/analytics/services/thresholds.py` izmanto `scope_level`, lai:
+
+1. **Atrast piemērojamos noteikumus** — `_applicable_rules(measurement)` veido savienoto querysetu no `ThresholdRule` ar precīzi tā tvēruma FK, ko atbilst mērījumam. Sensor-scope noteikums attiecas tikai uz savu sensoru — citu sensoru mērījumi to neredz.
+2. **Atrast atvērtus notikumus dedup-am** un **slēgt atvērtus notikumus** — `_scope_filter(qs, rule, measurement)` papildina `payload__rule_code=…` atlasi ar tvēruma FK (sensor/device/asset/site), lai normāla vērtība no cita sensora neslēgtu cita sensora atvērtu notikumu. Globāliem noteikumiem notikumi tiek izolēti pēc stiprākā mērījuma līmeņa (sensor → device → asset → site), kas garantē, ka divi aktīvi ar globālu noteikumu neuztur viens otra notikumu.
+
+### Notikuma `payload` lauki
+
+`Event.payload` (`threshold_anomaly`) satur šādus diagnostikas laukus:
+
+| Lauks | Apraksts |
+| --- | --- |
+| `rule_code` | `ThresholdRule.code` |
+| `scope_level` | `global`/`site`/`asset`/`device`/`sensor` |
+| `metric_key` | `MetricDefinition.key` |
+| `sensor_code`, `sensor_id` | mērījuma sensora dati, ja pieejami |
+| `device_uid` | mērījuma ierīces UID |
+| `asset_code` | mērījuma aktīva kods |
+| `site_code` | mērījuma site kods |
+| `value` | konkrētā mērījuma vērtība |
+| `lower_bound`, `upper_bound` | noteikuma robežas |
+| `measurement_id` | mērījuma UUID stringā |
+
+Operatora UI (`/dashboard/events/<id>/`) jau parāda visu šo informāciju tabulās un payload blokā.
+
+### Notikumu automātiska aizvēršana, kad noteikums tiek deaktivēts
+
+`ThresholdRule.is_enabled` ir pārslēdzams karogs: ja tas ir `False`, analītikas serviss noteikumu **neredz** (`_applicable_rules` filtrē pēc `is_enabled=True`). Tas nozīmē, ka pēc deaktivēšanas vairs neviens "atgriešanās normā" mērījums nevar sasniegt `_close_open_events` ceļu, un noteikuma atvērtie `threshold_anomaly` notikumi sēž dashboard-ā mūžīgi.
+
+Lai novērstu šo trūkumu, `ThresholdRule.save()` reģistrē pāreju `is_enabled: True → False` un sinhroni aizver visus tā atvērtos notikumus, kas atbilst `payload.rule_code == self.code`:
+
+- `event.status = closed`;
+- `event.closed_at = timezone.now()`;
+- `event.payload['closed_reason'] = 'rule_disabled'`;
+- `event.payload['closed_at'] = ISO laiks`.
+
+Detaļas un garantijas:
+
+1. **Tikai pāreja, nevis stāvoklis.** Ja noteikums tiek izveidots ar `is_enabled=False` (vai saglabāts atkārtoti, paliekot izslēgtam), aizvēršanas loģika netiek izsaukta. Hooks reaģē tieši uz `True → False` maiņu, izmantojot `_state.adding` un instanču līmeņa `_prev_is_enabled` snapshotu, nevis papildu DB roundtrip.
+2. **Izolēts pēc `rule_code`.** Tiek aizvērti tikai tie atvērtie notikumi, kas piederēja tieši šim noteikumam. Cita noteikuma atvērtie notikumi paliek neaiztikti, pat ja tie ir uz to pašu sensoru/metriku.
+3. **Idempotents.** Jau aizvērti notikumi netiek modificēti — `closed_at` un `closed_reason` ir uzlikti tikai pirmajā pārejā.
+4. **Atkārtota aktivizēšana neatver notikumus.** Iestatot `is_enabled=True` atpakaļ, aizvērtie notikumi paliek aizvērti. Nākamais pārkāpums izveido jaunu, svaigu notikumu.
+5. **Pieejams arī kā primitīvs.** Metode `ThresholdRule._close_open_events_on_disable()` ir izmantojama tieši — piemēram, vienreizējai datu uzkopšanai (atgriež aizvērto notikumu skaitu).
+
+Operatora skats: deaktivēšana ir pieejama vai nu no Django administrācijas (`/admin/analytics/thresholdrule/`), vai no dashboard rediģēšanas lapas `/dashboard/assets/<asset_code>/rules/<rule_code>/edit/` (skat. `docs/dashboard_usage.md`, sadaļa “Rediģēt esošu sliekšņa noteikumu”).
 
 Pamatdetaļas un ievadprasības skatīt iepriekšējā darba uzdevuma dokumentā un pirmkodā:
 
@@ -251,6 +360,62 @@ Sagaidāmais rezultāts: iepriekš atvērtais `communication_timeout` notikums t
 - `apps/digital_twin/models.py` — `AssetState.has_active_anomaly`, `AssetState.active_anomaly_count`.
 - `apps/events/models.py` — `EventType.COMMUNICATION_TIMEOUT`.
 - `config/settings/base.py` — `COMMUNICATION_TIMEOUT_GRACE_MULTIPLIER`, `COMMUNICATION_TIMEOUT_DEFAULT_SECONDS`.
+
+## Diagnostika: nevēlamu globālu noteikumu atrašana
+
+Pēc Phase 7 bugfix ieteicams periodiski pārbaudīt, vai datubāzē neatrodas neapzināti `global` tvēruma noteikumi, kas varētu aktivizēties uz nesaistītu sensoru mērījumiem.
+
+```bash
+docker compose -f docker-compose.local.yml exec web python manage.py shell -c "
+from apps.analytics.models import ThresholdRule, ThresholdRuleScope
+print('Aktīvie globālie noteikumi (uzmanīgi izvērtēt!):')
+for r in (
+    ThresholdRule.objects
+    .filter(is_enabled=True, scope_level=ThresholdRuleScope.GLOBAL)
+    .select_related('metric')
+    .order_by('metric__key', 'code')
+):
+    print(f'  {r.code}  metric={r.metric.key}  bounds=({r.lower_bound}, {r.upper_bound})  severity={r.severity}')
+"
+```
+
+Pārbaude pārklājošajiem `temperature_c` noteikumiem:
+
+```bash
+docker compose -f docker-compose.local.yml exec web python manage.py shell -c "
+from apps.analytics.models import ThresholdRule
+for r in (
+    ThresholdRule.objects
+    .filter(metric__key='temperature_c', is_enabled=True)
+    .select_related('sensor', 'asset', 'device', 'site')
+    .order_by('scope_level', 'code')
+):
+    print(f'  {r.code:40s} scope={r.scope_level:6s}  bounds=({r.lower_bound}, {r.upper_bound})  sensor={r.sensor.code if r.sensor else None}')
+"
+```
+
+Manuāla labošana (piemēram, ja datu migrācija atklāj vēsturisku noteikumu, kas patiesībā bija domāts vienam sensoram):
+
+```python
+# Django shell — promote 'rule-000001' from inferred global to sensor scope.
+from apps.analytics.models import ThresholdRule, ThresholdRuleScope
+from apps.assets.models import Sensor
+
+rule = ThresholdRule.objects.get(code='rule-000001')
+sensor = Sensor.objects.get(code='sensor-000001')
+rule.scope_level = ThresholdRuleScope.SENSOR
+rule.sensor = sensor
+# clean() auto-aizpildīs device/asset/site.
+rule.save()
+```
+
+vai vienkārši deaktivizēt:
+
+```python
+ThresholdRule.objects.filter(code='rule-000001').update(is_enabled=False)
+```
+
+Šis darbs **netiek automatizēts migrācijās** — operatoram apzināti jāizlemj, ko darīt ar katru atrasto globālo noteikumu.
 
 ## Tālākie soļi
 

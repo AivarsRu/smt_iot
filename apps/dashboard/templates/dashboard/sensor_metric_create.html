@@ -1,0 +1,199 @@
+{% extends "dashboard/base.html" %}
+{% load static %}
+
+{% block title %}Pievienot metriku — {{ sensor.code }}{% endblock %}
+
+{% block header_meta %}{% endblock %}
+
+{% block content %}
+  <p class="back-link">
+    <a href="{% url 'dashboard:asset-configure' asset_code=asset.code %}" rel="noopener">← Atpakaļ uz konfigurāciju</a>
+  </p>
+
+  <section class="dashboard-section" aria-labelledby="metric-create-heading">
+    <div class="section-header">
+      <h2 id="metric-create-heading" class="section-header__title">
+        4. solis — metrika un sliekšņa noteikums
+      </h2>
+      <p class="section-header__hint">
+        Sensoram <code>{{ sensor.code }}</code> ({{ sensor.name }}) tiks
+        piesaistīta viena <code>MetricDefinition</code> caur jaunu
+        <code>SensorMetric</code> rindu. Pēc izvēles var izveidot vienu
+        <code>ThresholdRule</code> šim sensoram un metrikai.
+      </p>
+    </div>
+
+    {% if has_errors %}
+      <div class="form-errors">Forma satur kļūdas. Lūdzu, izlabojiet zemāk izceltos laukus.</div>
+    {% endif %}
+
+    {% if form.non_field_errors %}
+      <div class="form-errors">{{ form.non_field_errors|join:" " }}</div>
+    {% endif %}
+
+    <form method="post" novalidate data-stage-form>
+      {% csrf_token %}
+
+      {# ── Metric section ──────────────────────────────────────── #}
+      <fieldset class="form-section">
+        <legend class="form-section__title">Metrika</legend>
+
+        <div class="form-grid">
+          <div class="form-field form-field--full">
+            <label for="{{ form.metric_mode.id_for_label }}">Režīms</label>
+            {{ form.metric_mode }}
+            {% if form.metric_mode.errors %}<p class="form-field__error">{{ form.metric_mode.errors|join:" " }}</p>{% endif %}
+          </div>
+
+          <div class="form-field form-field--full" data-show-when="metric_mode" data-show-value="preset">
+            <label for="{{ form.sensor_metric_preset.id_for_label }}">SensorMetricPreset</label>
+            {{ form.sensor_metric_preset }}
+            {% if form.sensor_metric_preset.errors %}<p class="form-field__error">{{ form.sensor_metric_preset.errors|join:" " }}</p>{% endif %}
+          </div>
+
+          <div class="form-field form-field--full" data-show-when="metric_mode" data-show-value="existing">
+            <label for="{{ form.existing_metric.id_for_label }}">Esoša metrika</label>
+            {{ form.existing_metric }}
+            {% if form.existing_metric.errors %}<p class="form-field__error">{{ form.existing_metric.errors|join:" " }}</p>{% endif %}
+          </div>
+
+          <div class="form-field" data-show-when="metric_mode" data-show-value="new">
+            <label for="{{ form.new_metric_key.id_for_label }}">Atslēga *</label>
+            {{ form.new_metric_key }}
+            {% if form.new_metric_key.errors %}<p class="form-field__error">{{ form.new_metric_key.errors|join:" " }}</p>{% endif %}
+          </div>
+          <div class="form-field" data-show-when="metric_mode" data-show-value="new">
+            <label for="{{ form.new_metric_display_name.id_for_label }}">Nosaukums *</label>
+            {{ form.new_metric_display_name }}
+            {% if form.new_metric_display_name.errors %}<p class="form-field__error">{{ form.new_metric_display_name.errors|join:" " }}</p>{% endif %}
+          </div>
+          <div class="form-field" data-show-when="metric_mode" data-show-value="new">
+            <label for="{{ form.new_metric_unit.id_for_label }}">Vienība</label>
+            {{ form.new_metric_unit }}
+          </div>
+          <div class="form-field" data-show-when="metric_mode" data-show-value="new">
+            <label for="{{ form.new_metric_data_type.id_for_label }}">Datu tips</label>
+            {{ form.new_metric_data_type }}
+          </div>
+          <div class="form-field" data-show-when="metric_mode" data-show-value="new">
+            <label for="{{ form.new_metric_normal_min.id_for_label }}">Normal min</label>
+            {{ form.new_metric_normal_min }}
+          </div>
+          <div class="form-field" data-show-when="metric_mode" data-show-value="new">
+            <label for="{{ form.new_metric_normal_max.id_for_label }}">Normal max</label>
+            {{ form.new_metric_normal_max }}
+          </div>
+          <div class="form-field" data-show-when="metric_mode" data-show-value="new">
+            <label for="{{ form.new_metric_warning_min.id_for_label }}">Warning min</label>
+            {{ form.new_metric_warning_min }}
+          </div>
+          <div class="form-field" data-show-when="metric_mode" data-show-value="new">
+            <label for="{{ form.new_metric_warning_max.id_for_label }}">Warning max</label>
+            {{ form.new_metric_warning_max }}
+          </div>
+          <div class="form-field" data-show-when="metric_mode" data-show-value="new">
+            <label for="{{ form.new_metric_sort_order.id_for_label }}">Sort order</label>
+            {{ form.new_metric_sort_order }}
+          </div>
+        </div>
+      </fieldset>
+
+      {# ── SensorMetric metadata ───────────────────────────────── #}
+      <fieldset class="form-section">
+        <legend class="form-section__title">SensorMetric</legend>
+        <p class="form-section__hint">
+          SensorMetric rinda saista sensoru ar metriku. Tā ir vienīgā
+          autoritatīvā karte starp sensoru un tā mērāmajām metrikām.
+        </p>
+        <div class="form-grid">
+          <div class="form-field">
+            <label>
+              {{ form.sensor_metric_is_required }} Obligāta
+            </label>
+          </div>
+          <div class="form-field">
+            <label for="{{ form.sensor_metric_sort_order.id_for_label }}">Sort order</label>
+            {{ form.sensor_metric_sort_order }}
+          </div>
+        </div>
+      </fieldset>
+
+      {# ── Threshold rule ──────────────────────────────────────── #}
+      <fieldset class="form-section">
+        <legend class="form-section__title">Sliekšņa noteikums (pēc izvēles)</legend>
+        <p class="form-section__hint">
+          ThresholdRule koda ģenerēšana notiek automātiski (piem.,
+          <code>rule-000001</code>).
+        </p>
+        <div class="form-grid">
+          <div class="form-field form-field--full">
+            <label for="{{ form.threshold_mode.id_for_label }}">Režīms</label>
+            {{ form.threshold_mode }}
+            {% if form.threshold_mode.errors %}<p class="form-field__error">{{ form.threshold_mode.errors|join:" " }}</p>{% endif %}
+          </div>
+          <div class="form-field form-field--full" data-show-when="threshold_mode" data-show-value="preset">
+            <label for="{{ form.threshold_preset.id_for_label }}">ThresholdRulePreset</label>
+            {{ form.threshold_preset }}
+            {% if form.threshold_preset.errors %}<p class="form-field__error">{{ form.threshold_preset.errors|join:" " }}</p>{% endif %}
+          </div>
+
+          {# Scope picker — visible when a threshold is being created. #}
+          <div class="form-field form-field--full"
+               data-show-when="threshold_mode"
+               data-show-value="manual"
+               data-show-value-alt="preset">
+            <label for="{{ form.threshold_scope_level.id_for_label }}">Tvērums *</label>
+            {{ form.threshold_scope_level }}
+            {% if form.threshold_scope_level.errors %}
+              <p class="form-field__error">{{ form.threshold_scope_level.errors|join:" " }}</p>
+            {% endif %}
+            <p class="form-field__hint" data-role="scope-hint">
+              Noklusētā izvēle <code>sensor</code> piesaista noteikumu tikai
+              <code>{{ sensor.code }}</code> sensoram. Plašāks tvērums
+              (<code>device</code>/<code>asset</code>/<code>site</code>/<code>global</code>)
+              attiecas uz vairākiem mērījumu avotiem — lūdzu, izvēlieties uzmanīgi.
+            </p>
+          </div>
+          <div class="form-field" data-show-when="threshold_mode" data-show-value="manual">
+            <label for="{{ form.threshold_name.id_for_label }}">Nosaukums *</label>
+            {{ form.threshold_name }}
+            {% if form.threshold_name.errors %}<p class="form-field__error">{{ form.threshold_name.errors|join:" " }}</p>{% endif %}
+          </div>
+          <div class="form-field" data-show-when="threshold_mode" data-show-value="manual">
+            <label for="{{ form.threshold_severity.id_for_label }}">Severity</label>
+            {{ form.threshold_severity }}
+          </div>
+          <div class="form-field form-field--full" data-show-when="threshold_mode" data-show-value="manual">
+            <label for="{{ form.threshold_description.id_for_label }}">Apraksts</label>
+            {{ form.threshold_description }}
+          </div>
+          <div class="form-field" data-show-when="threshold_mode" data-show-value="manual">
+            <label for="{{ form.threshold_lower_bound.id_for_label }}">Lower bound</label>
+            {{ form.threshold_lower_bound }}
+            {% if form.threshold_lower_bound.errors %}<p class="form-field__error">{{ form.threshold_lower_bound.errors|join:" " }}</p>{% endif %}
+          </div>
+          <div class="form-field" data-show-when="threshold_mode" data-show-value="manual">
+            <label for="{{ form.threshold_upper_bound.id_for_label }}">Upper bound</label>
+            {{ form.threshold_upper_bound }}
+            {% if form.threshold_upper_bound.errors %}<p class="form-field__error">{{ form.threshold_upper_bound.errors|join:" " }}</p>{% endif %}
+          </div>
+          <div class="form-field" data-show-when="threshold_mode" data-show-value="manual">
+            <label>
+              {{ form.threshold_close_when_normal }} Aizvērt, kad atgriežas normā
+            </label>
+          </div>
+        </div>
+      </fieldset>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary"
+                data-role="metric-create-submit">Saglabāt</button>
+        <a class="btn" href="{% url 'dashboard:asset-configure' asset_code=asset.code %}">Atcelt</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}
+
+{% block extra_scripts %}
+  <script src="{% static 'dashboard/asset_create.js' %}" defer></script>
+{% endblock %}

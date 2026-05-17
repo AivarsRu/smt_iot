@@ -18,6 +18,7 @@ class analytics_thresholdrule {
    uuid asset_id
    uuid device_id
    uuid metric_id
+   uuid sensor_id
    uuid site_id
    uuid id
 }
@@ -341,6 +342,7 @@ class telemetry_rawmessage {
 
 analytics_thresholdrule  -->  assets_asset : asset_id:id
 analytics_thresholdrule  -->  assets_device : device_id:id
+analytics_thresholdrule  -->  assets_sensor : sensor_id:id
 analytics_thresholdrule  -->  assets_site : site_id:id
 analytics_thresholdrule  -->  iot_config_metricdefinition : metric_id:id
 assets_asset  -->  assets_asset : parent_id:id

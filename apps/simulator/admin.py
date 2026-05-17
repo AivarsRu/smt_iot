@@ -12,9 +12,10 @@ class SimulatorMetricProfileInline(admin.TabularInline):
     model = SimulatorMetricProfile
     extra = 1
     fields = [
-        "metric", "generation_mode", "base_value", "noise_amplitude",
+        "sensor", "metric", "generation_mode", "base_value", "noise_amplitude",
         "min_value", "max_value", "is_enabled", "sort_order",
     ]
+    raw_id_fields = ["sensor", "metric"]
 
 
 class SimulatorScenarioDeviceInline(admin.TabularInline):
@@ -42,10 +43,17 @@ class SimulatorScenarioDeviceAdmin(admin.ModelAdmin):
 @admin.register(SimulatorMetricProfile)
 class SimulatorMetricProfileAdmin(admin.ModelAdmin):
     list_display = [
-        "scenario_device", "metric", "generation_mode",
+        "scenario_device", "sensor", "metric", "generation_mode",
         "base_value", "noise_amplitude", "is_enabled",
     ]
     list_filter = ["generation_mode", "is_enabled"]
+    raw_id_fields = ["sensor", "metric", "scenario_device"]
+    search_fields = [
+        "scenario_device__scenario__code",
+        "scenario_device__device__device_uid",
+        "sensor__code",
+        "metric__key",
+    ]
 
 
 @admin.register(SimulatorRun)

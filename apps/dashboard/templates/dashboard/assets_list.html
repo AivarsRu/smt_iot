@@ -1,0 +1,72 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Aktīvi — SMT Digital Solution{% endblock %}
+
+{% block header_meta %}{# Hide the auto-refresh controls — list page is static. #}{% endblock %}
+
+{% block content %}
+  <section class="dashboard-section" aria-labelledby="assets-list-heading">
+    <div class="toolbar">
+      <div class="section-header">
+        <h2 id="assets-list-heading" class="section-header__title">
+          Aktīvu saraksts
+        </h2>
+        <p class="section-header__hint">
+          Operatoriem paredzēts pārskats. Klikšķiniet uz koda, lai atvērtu
+          detalizēto skatu.
+        </p>
+      </div>
+      <div>
+        <a class="btn btn--primary"
+           href="{{ create_url }}"
+           data-role="create-asset-link">+ Izveidot jaunu aktīvu</a>
+      </div>
+    </div>
+
+    {% if rows %}
+      <table class="data-table" data-role="assets-table">
+        <thead>
+          <tr>
+            <th>Kods</th>
+            <th>Nosaukums</th>
+            <th>Objekts</th>
+            <th>Tips</th>
+            <th>Statuss</th>
+            <th class="numeric">Ierīces</th>
+            <th class="numeric">Anomālijas</th>
+            <th>Darbības</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+            <tr data-role="asset-row" data-asset-code="{{ row.code }}">
+              <td>
+                <a href="{{ row.detail_url }}" data-role="asset-detail-link">{{ row.code }}</a>
+              </td>
+              <td>{{ row.name }}</td>
+              <td>{{ row.site_code|default:"—" }}</td>
+              <td>{{ row.asset_type|default:"—" }}</td>
+              <td>
+                <span class="badge badge--status-{{ row.status_value }}">
+                  {{ row.status|default:"—" }}
+                </span>
+              </td>
+              <td class="numeric">{{ row.devices_count }}</td>
+              <td class="numeric">{{ row.active_anomaly_count }}</td>
+              <td class="row-actions">
+                <a href="{{ row.detail_url }}">monitorings</a>
+                <a href="{{ row.configure_url }}" data-role="configure-link">konfigurēt</a>
+                <a href="{{ row.summary_api_url }}" rel="noopener">JSON</a>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <div class="state state--empty" data-role="assets-empty">
+        Vēl nav neviena aktīva.
+        <a href="{{ create_url }}">Izveidot pirmo aktīvu →</a>
+      </div>
+    {% endif %}
+  </section>
+{% endblock %}

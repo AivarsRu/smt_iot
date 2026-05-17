@@ -1,0 +1,128 @@
+{% extends "dashboard/base.html" %}
+{% load static %}
+
+{% block title %}Notikumi un anomālijas — SMT Digital Solution{% endblock %}
+
+{% block header_meta %}{# Refresh handled by the page-local button. #}{% endblock %}
+
+{% block content %}
+  <p class="back-link">
+    <a href="{% url 'dashboard:overview' %}" rel="noopener">← Atpakaļ uz pārskatu</a>
+  </p>
+
+  <section class="dashboard-section" aria-labelledby="events-heading">
+    <div class="section-header">
+      <h2 id="events-heading" class="section-header__title">
+        Notikumi un anomālijas
+      </h2>
+      <p class="section-header__hint">
+        Tikai-lasāms saraksts. Filtrus var kombinēt; rezultāti tiek ielādēti
+        no <code>/api/events/</code>.
+      </p>
+    </div>
+
+    {# ── Filter form ─────────────────────────────────────────────────── #}
+    <form class="events-filter" data-role="events-filter" novalidate>
+      <div class="form-grid form-grid--filters">
+        <div class="form-field">
+          <label for="filter-status">Statuss</label>
+          <select id="filter-status" name="status" data-role="filter-status">
+            <option value="">Visi</option>
+            {% for value, label in event_status_choices %}
+              <option value="{{ value }}">{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-field">
+          <label for="filter-event_type">Tips</label>
+          <select id="filter-event_type" name="event_type" data-role="filter-event_type">
+            <option value="">Visi</option>
+            {% for value, label in event_type_choices %}
+              <option value="{{ value }}">{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-field">
+          <label for="filter-severity">Smagums</label>
+          <select id="filter-severity" name="severity" data-role="filter-severity">
+            <option value="">Visi</option>
+            {% for value, label in severity_choices %}
+              <option value="{{ value }}">{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-field">
+          <label for="filter-asset">Aktīvs (kods vai UUID)</label>
+          <input type="text" id="filter-asset" name="asset"
+                 data-role="filter-asset"
+                 placeholder="piem., charger-001">
+        </div>
+        <div class="form-field">
+          <label for="filter-device">Ierīce (uid vai UUID)</label>
+          <input type="text" id="filter-device" name="device"
+                 data-role="filter-device"
+                 placeholder="piem., device-000001">
+        </div>
+        <div class="form-field">
+          <label for="filter-sensor">Sensors (kods vai UUID)</label>
+          <input type="text" id="filter-sensor" name="sensor"
+                 data-role="filter-sensor"
+                 placeholder="piem., sensor-000001">
+        </div>
+        <div class="form-field">
+          <label for="filter-metric">Metrika (atslēga vai UUID)</label>
+          <input type="text" id="filter-metric" name="metric"
+                 data-role="filter-metric"
+                 placeholder="piem., temperature_c">
+        </div>
+        <div class="form-field">
+          <label for="filter-from">No (ISO datetime)</label>
+          <input type="datetime-local" id="filter-from" name="from"
+                 data-role="filter-from">
+        </div>
+        <div class="form-field">
+          <label for="filter-to">Līdz (ISO datetime)</label>
+          <input type="datetime-local" id="filter-to" name="to"
+                 data-role="filter-to">
+        </div>
+        <div class="form-field">
+          <label for="filter-limit">Limits</label>
+          <input type="number" id="filter-limit" name="limit"
+                 data-role="filter-limit"
+                 min="1" max="{{ max_limit }}" value="{{ default_limit }}">
+          <p class="form-field__hint">Maks. {{ max_limit }}.</p>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary"
+                data-role="events-apply"
+                data-testid="events-apply">Pielietot filtrus</button>
+        <button type="button" class="btn"
+                data-role="events-reset">Notīrīt filtrus</button>
+        <button type="button" class="btn"
+                data-role="events-refresh">Atjaunot</button>
+      </div>
+    </form>
+
+    {# ── Page-level loading / error banner ───────────────────────────── #}
+    <div data-role="events-meta" class="events-meta"></div>
+    <div data-role="events-error" class="state state--error" hidden></div>
+    <div data-role="events-empty" class="state state--empty" hidden>
+      Nav notikumu, kas atbilst filtra kritērijiem.
+    </div>
+
+    {# ── Event table ─────────────────────────────────────────────────── #}
+    <div data-role="events-table-wrapper">
+      <div class="state state--loading" data-role="events-loading">Ielādē…</div>
+    </div>
+  </section>
+{% endblock %}
+
+{% block dashboard_config %}
+  {{ events_list_config|json_script:"events-list-config" }}
+{% endblock %}
+
+{% block extra_scripts %}
+  <script src="{% static 'dashboard/dashboard.js' %}" defer></script>
+{% endblock %}

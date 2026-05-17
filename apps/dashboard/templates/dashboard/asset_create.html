@@ -1,0 +1,153 @@
+{% extends "dashboard/base.html" %}
+{% load static %}
+
+{% block title %}Izveidot jaunu aktīvu — SMT Digital Solution{% endblock %}
+
+{% block header_meta %}{# Hide auto-refresh — this is a form page. #}{% endblock %}
+
+{% block content %}
+  <p class="back-link">
+    <a href="{% url 'dashboard:assets-list' %}" rel="noopener">← Atpakaļ uz aktīvu sarakstu</a>
+  </p>
+
+  <section class="dashboard-section" aria-labelledby="asset-create-heading">
+    <div class="section-header">
+      <h2 id="asset-create-heading" class="section-header__title">
+        1. solis — izveidot aktīvu
+      </h2>
+      <p class="section-header__hint">
+        Šis ir pirmais solis no četriem. Tehniskais identifikators
+        (<code>Asset.code</code>) tiks ģenerēts automātiski. Pēc aktīva
+        izveides notiks pārvirze uz konfigurācijas lapu, kur var pievienot
+        ierīces, sensorus un metrikas.
+      </p>
+    </div>
+
+    {% if has_errors %}
+      <div class="form-errors" data-role="form-errors">
+        Forma satur kļūdas. Lūdzu, izlabojiet zemāk izceltos laukus.
+      </div>
+    {% endif %}
+
+    <form method="post" novalidate data-role="asset-create-form" id="asset-create-form">
+      {% csrf_token %}
+
+      {# ── Site section ──────────────────────────────────────────── #}
+      <fieldset class="form-section" data-section="site">
+        <legend class="form-section__title">Objekts (Site)</legend>
+        <p class="form-section__hint">
+          Izvēlieties esošu objektu vai izveidojiet jaunu. Objekta kodam
+          jābūt unikālam.
+        </p>
+
+        {% if form.non_field_errors %}
+          <div class="form-errors">{{ form.non_field_errors|join:" " }}</div>
+        {% endif %}
+
+        <div class="form-grid">
+          <div class="form-field form-field--full">
+            <label for="{{ form.site_mode.id_for_label }}">Režīms</label>
+            {{ form.site_mode }}
+            {% if form.site_mode.errors %}<p class="form-field__error">{{ form.site_mode.errors|join:" " }}</p>{% endif %}
+          </div>
+
+          <div class="form-field form-field--full" data-show-when="site_mode" data-show-value="existing">
+            <label for="{{ form.existing_site.id_for_label }}">Esošs objekts</label>
+            {{ form.existing_site }}
+            {% if form.existing_site.errors %}<p class="form-field__error">{{ form.existing_site.errors|join:" " }}</p>{% endif %}
+          </div>
+
+          <div class="form-field" data-show-when="site_mode" data-show-value="new">
+            <label for="{{ form.new_site_code.id_for_label }}">Kods *</label>
+            {{ form.new_site_code }}
+            {% if form.new_site_code.errors %}<p class="form-field__error">{{ form.new_site_code.errors|join:" " }}</p>{% endif %}
+          </div>
+          <div class="form-field" data-show-when="site_mode" data-show-value="new">
+            <label for="{{ form.new_site_name.id_for_label }}">Nosaukums *</label>
+            {{ form.new_site_name }}
+            {% if form.new_site_name.errors %}<p class="form-field__error">{{ form.new_site_name.errors|join:" " }}</p>{% endif %}
+          </div>
+          <div class="form-field form-field--full" data-show-when="site_mode" data-show-value="new">
+            <label for="{{ form.new_site_description.id_for_label }}">Apraksts</label>
+            {{ form.new_site_description }}
+          </div>
+          <div class="form-field form-field--full" data-show-when="site_mode" data-show-value="new">
+            <label for="{{ form.new_site_address.id_for_label }}">Adrese</label>
+            {{ form.new_site_address }}
+          </div>
+          <div class="form-field" data-show-when="site_mode" data-show-value="new">
+            <label for="{{ form.new_site_latitude.id_for_label }}">Latitude</label>
+            {{ form.new_site_latitude }}
+          </div>
+          <div class="form-field" data-show-when="site_mode" data-show-value="new">
+            <label for="{{ form.new_site_longitude.id_for_label }}">Longitude</label>
+            {{ form.new_site_longitude }}
+          </div>
+          <div class="form-field" data-show-when="site_mode" data-show-value="new">
+            <label for="{{ form.new_site_timezone.id_for_label }}">Laika josla</label>
+            {{ form.new_site_timezone }}
+            <p class="form-field__hint">Atļautas tikai norādītās laika joslas.</p>
+            {% if form.new_site_timezone.errors %}<p class="form-field__error">{{ form.new_site_timezone.errors|join:" " }}</p>{% endif %}
+          </div>
+          <div class="form-field" data-show-when="site_mode" data-show-value="new">
+            <label>
+              {{ form.new_site_is_demo }} Demo objekts
+            </label>
+          </div>
+        </div>
+      </fieldset>
+
+      {# ── Asset section ─────────────────────────────────────────── #}
+      <fieldset class="form-section" data-section="asset">
+        <legend class="form-section__title">Aktīvs (Asset)</legend>
+        <p class="form-section__hint">
+          Aktīva tehniskais kods tiks ģenerēts automātiski, piem.,
+          <code>asset-000001</code>. Operators ievada tikai lietotājam
+          domāto nosaukumu un tipu.
+        </p>
+
+        <div class="form-grid">
+          <div class="form-field">
+            <label for="{{ form.name.id_for_label }}">Nosaukums *</label>
+            {{ form.name }}
+            {% if form.name.errors %}<p class="form-field__error">{{ form.name.errors|join:" " }}</p>{% endif %}
+          </div>
+          <div class="form-field">
+            <label for="{{ form.asset_type.id_for_label }}">Tips *</label>
+            {{ form.asset_type }}
+          </div>
+          <div class="form-field">
+            <label for="{{ form.status.id_for_label }}">Statuss</label>
+            {{ form.status }}
+          </div>
+          <div class="form-field form-field--full">
+            <label for="{{ form.description.id_for_label }}">Apraksts</label>
+            {{ form.description }}
+          </div>
+          <div class="form-field">
+            <label for="{{ form.latitude.id_for_label }}">Latitude</label>
+            {{ form.latitude }}
+          </div>
+          <div class="form-field">
+            <label for="{{ form.longitude.id_for_label }}">Longitude</label>
+            {{ form.longitude }}
+          </div>
+          <div class="form-field form-field--full">
+            <label for="{{ form.external_id.id_for_label }}">External ID</label>
+            {{ form.external_id }}
+          </div>
+        </div>
+      </fieldset>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary"
+                data-role="asset-create-submit">Izveidot un turpināt</button>
+        <a class="btn" href="{% url 'dashboard:assets-list' %}">Atcelt</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}
+
+{% block extra_scripts %}
+  <script src="{% static 'dashboard/asset_create.js' %}" defer></script>
+{% endblock %}

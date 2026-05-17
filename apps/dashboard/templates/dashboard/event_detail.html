@@ -1,0 +1,103 @@
+{% extends "dashboard/base.html" %}
+{% load static %}
+
+{% block title %}Notikums {{ event_id }} — SMT Digital Solution{% endblock %}
+
+{% block header_meta %}{% endblock %}
+
+{% block content %}
+  <p class="back-link">
+    <a href="{% url 'dashboard:events-list' %}" rel="noopener"
+       data-role="events-list-link">← Atpakaļ uz notikumu sarakstu</a>
+  </p>
+
+  <div data-role="page-error" hidden></div>
+
+  {# ── Event identity & status ────────────────────────────────────────── #}
+  <section class="dashboard-section" aria-labelledby="event-identity-heading">
+    <div class="section-header">
+      <h2 id="event-identity-heading" class="section-header__title"
+          data-role="event-title">Notikums</h2>
+      <p class="section-header__hint">
+        Tikai-lasāms skats. Notikumu apstiprināšana un slēgšana šajā
+        uzdevumā nav ieviesta.
+      </p>
+    </div>
+
+    <div class="event-detail__header" data-role="event-identity">
+      <div class="state state--loading" data-role="event-identity-state">Ielādē…</div>
+    </div>
+  </section>
+
+  {# ── Context block: site / asset / device / sensor / metric ─────────── #}
+  <section class="dashboard-section" aria-labelledby="event-context-heading">
+    <div class="section-header">
+      <h3 id="event-context-heading" class="section-header__title">Konteksts</h3>
+    </div>
+    <div class="context-grid" data-role="event-context">
+      <div class="state state--loading" data-role="event-context-state">Ielādē…</div>
+    </div>
+  </section>
+
+  {# ── Related measurement block ──────────────────────────────────────── #}
+  <section class="dashboard-section" aria-labelledby="event-measurement-heading">
+    <div class="section-header">
+      <h3 id="event-measurement-heading" class="section-header__title">Saistītais mērījums</h3>
+    </div>
+    <div data-role="event-measurement">
+      <div class="state state--loading" data-role="event-measurement-state">Ielādē…</div>
+    </div>
+  </section>
+
+  {# ── Sensor/metric timeline ─────────────────────────────────────────── #}
+  <section class="dashboard-section" aria-labelledby="event-timeline-heading"
+           data-role="event-timeline-section" hidden>
+    <div class="section-header">
+      <h3 id="event-timeline-heading" class="section-header__title">
+        Sensora un metrikas timeline
+      </h3>
+      <p class="section-header__hint"
+         data-role="event-timeline-context">—</p>
+    </div>
+
+    <div class="timeline-controls" data-role="timeline-controls">
+      <div class="period-buttons" data-role="period-buttons" role="tablist"
+           aria-label="Laika perioda izvēle">
+        {# Buttons rendered by JS so the set stays in sync with EVENT_TIMELINE_PERIODS. #}
+      </div>
+      <form class="timeline-custom" data-role="timeline-custom">
+        <label for="timeline-from">No</label>
+        <input type="datetime-local" id="timeline-from"
+               data-role="timeline-from">
+        <label for="timeline-to">Līdz</label>
+        <input type="datetime-local" id="timeline-to"
+               data-role="timeline-to">
+        <button type="submit" class="btn"
+                data-role="timeline-apply">Pielietot</button>
+      </form>
+    </div>
+
+    <div class="timeline-summary" data-role="timeline-summary"></div>
+    <div class="timeline-chart-wrapper">
+      <svg class="timeline-chart" data-role="timeline-chart"
+           aria-label="Sensora un metrikas laika rinda"></svg>
+    </div>
+    <div data-role="timeline-state" class="state state--loading">Ielādē…</div>
+  </section>
+
+  {# ── Raw payload ────────────────────────────────────────────────────── #}
+  <section class="dashboard-section" aria-labelledby="event-payload-heading">
+    <div class="section-header">
+      <h3 id="event-payload-heading" class="section-header__title">Payload</h3>
+    </div>
+    <pre class="payload-block" data-role="event-payload">—</pre>
+  </section>
+{% endblock %}
+
+{% block dashboard_config %}
+  {{ event_detail_config|json_script:"event-detail-config" }}
+{% endblock %}
+
+{% block extra_scripts %}
+  <script src="{% static 'dashboard/dashboard.js' %}" defer></script>
+{% endblock %}

@@ -28,7 +28,7 @@ Simulatora scenāriju konfigurācija atrodas `apps.simulator.models`:
 
 - `SimulatorScenario` — augstākā līmeņa scenārijs (kods, sait, noklusētais statuss, intervāls).
 - `SimulatorScenarioDevice` — saite uz konkrētu `assets.Device`, ko scenārijs simulē.
-- `SimulatorMetricProfile` — metrikas ģenerēšanas parametri (`base_value`, `min_value`, `max_value`, `noise_amplitude`, `generation_mode`).
+- `SimulatorMetricProfile` — metrikas ģenerēšanas parametri (`base_value`, `min_value`, `max_value`, `noise_amplitude`, `generation_mode`). **Katrai rindai ir obligāts `sensor` lauks**, kas saista profilu ar konkrētu `assets.Sensor`; sensoram ir jāpieder tai pašai `Device`, kuru norāda `SimulatorScenarioDevice`, un metrikai ir jābūt deklarētai sensoram caur `SensorMetric` (sk. `docs/data_model.md`).
 - `SimulatorRun` — vienas komandas izpildes audita ieraksts.
 
 Scenāriju var konfigurēt Django administrācijā vai ar `seed_demo_data` komandu.

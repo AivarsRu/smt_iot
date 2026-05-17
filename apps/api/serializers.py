@@ -14,7 +14,7 @@ from __future__ import annotations
 from rest_framework import serializers
 
 from apps.analytics.models import ThresholdRule
-from apps.assets.models import Asset, Device, Sensor, Site
+from apps.assets.models import Asset, Device, Sensor, SensorMetric, Site
 from apps.digital_twin.models import AssetState
 from apps.events.models import Event
 from apps.iot_config.models import MetricDefinition
@@ -62,16 +62,65 @@ class DeviceSerializer(serializers.ModelSerializer):
         )
 
 
+class SensorMetricSerializer(serializers.ModelSerializer):
+    metric_key = serializers.CharField(source="metric.key", read_only=True, default=None)
+    metric_unit = serializers.CharField(source="metric.unit", read_only=True, default=None)
+    metric_data_type = serializers.CharField(
+        source="metric.data_type", read_only=True, default=None,
+    )
+    sensor_code = serializers.CharField(source="sensor.code", read_only=True, default=None)
+    device_uid = serializers.CharField(
+        source="sensor.device.device_uid", read_only=True, default=None,
+    )
+
+    class Meta:
+        model = SensorMetric
+        fields = (
+            "id",
+            "sensor", "sensor_code", "device_uid",
+            "metric", "metric_key", "metric_unit", "metric_data_type",
+            "is_required", "sort_order", "is_active",
+            "created_at", "updated_at",
+        )
+
+
+class _NestedSensorMetricSerializer(serializers.ModelSerializer):
+    """Compact representation used when nested inside ``SensorSerializer``."""
+
+    metric_key = serializers.CharField(source="metric.key", read_only=True, default=None)
+    metric_unit = serializers.CharField(source="metric.unit", read_only=True, default=None)
+    metric_data_type = serializers.CharField(
+        source="metric.data_type", read_only=True, default=None,
+    )
+
+    class Meta:
+        model = SensorMetric
+        fields = (
+            "id",
+            "metric", "metric_key", "metric_unit", "metric_data_type",
+            "is_required", "sort_order",
+        )
+
+
 class SensorSerializer(serializers.ModelSerializer):
     device_uid = serializers.CharField(source="device.device_uid", read_only=True, default=None)
+    sensor_metrics = serializers.SerializerMethodField()
 
     class Meta:
         model = Sensor
         fields = (
             "id", "device", "device_uid", "code", "name",
             "sensor_type", "description",
+            "sensor_metrics",
             "created_at", "updated_at",
         )
+
+    @staticmethod
+    def get_sensor_metrics(obj) -> list:
+        # ``select_related`` on ``metric`` is added by ``SensorViewSet`` via
+        # ``prefetch_related``. The ordering matches ``SensorMetric.Meta``.
+        rows = obj.sensor_metrics.select_related("metric").filter(is_active=True)
+        return _NestedSensorMetricSerializer(rows, many=True).data
 
 
 # ── IoT config ───────────────────────────────────────────────────────────────
@@ -187,15 +236,18 @@ class ThresholdRuleSerializer(serializers.ModelSerializer):
     site_code = serializers.CharField(source="site.code", read_only=True, default=None)
     asset_code = serializers.CharField(source="asset.code", read_only=True, default=None)
     device_uid = serializers.CharField(source="device.device_uid", read_only=True, default=None)
+    sensor_code = serializers.CharField(source="sensor.code", read_only=True, default=None)
 
     class Meta:
         model = ThresholdRule
         fields = (
             "id", "code", "name", "description",
+            "scope_level",
             "metric", "metric_key",
             "site", "site_code",
             "asset", "asset_code",
             "device", "device_uid",
+            "sensor", "sensor_code",
             "is_enabled", "lower_bound", "upper_bound", "severity",
             "message_template", "close_when_normal", "sort_order",
             "created_at", "updated_at",

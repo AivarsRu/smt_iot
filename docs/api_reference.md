@@ -27,13 +27,14 @@ Visi resursi atrodas zem `/api/`:
 | `GET /api/assets/{id}/measurements/` | mērījumi šim aktīvam                       | tādi paši kā `/api/measurements/`                                                |
 | `GET /api/assets/{id}/events/`   | notikumi šim aktīvam                           | tādi paši kā `/api/events/`                                                      |
 | `GET /api/devices/`              | IoT ierīces                                    | `site`, `asset`, `status`, `is_simulated`                                        |
-| `GET /api/sensors/`              | sensori, kas piesaistīti ierīcēm               | —                                                                                |
+| `GET /api/sensors/`              | sensori, kas piesaistīti ierīcēm               | `device` (`device_uid` vai UUID)                                                 |
+| `GET /api/sensor-metrics/`       | sensora–metrikas spēju karte (`SensorMetric`)  | `sensor`, `device`, `metric` (kodu vai UUID)                                     |
 | `GET /api/metrics/`              | `MetricDefinition` katalogs                    | —                                                                                |
 | `GET /api/asset-states/`         | aktīvu pēdējais zināmais stāvoklis             | `status`, `has_active_anomaly`, `site`                                           |
 | `GET /api/measurements/`         | telemetrijas mērījumu vēsture                  | `asset`, `device`, `metric`, `from`, `to`, `limit`                               |
 | `GET /api/events/`               | anomāliju un sistēmas notikumi                 | `status`, `event_type`, `severity`, `asset`, `device`, `from`, `to`, `limit`     |
 | `GET /api/raw-messages/`         | neapstrādāti MQTT ziņojumi (diagnostikai)      | `device_uid`, `processing_status`, `source_type`, `from`, `to`, `limit`          |
-| `GET /api/threshold-rules/`      | sliekšņu noteikumi                             | —                                                                                |
+| `GET /api/threshold-rules/`      | sliekšņu noteikumi (atklāj `scope_level`, `sensor_code`) | —                                                                       |
 | `GET /api/simulator-scenarios/`  | simulatora scenāriji                           | —                                                                                |
 | `GET /api/simulator-runs/`       | simulatora vēsturiskie palaidieni              | `scenario`, `status`, `from`, `to`, `limit`                                      |
 
@@ -104,6 +105,7 @@ Klusa filtru ignorēšana **nav atļauta**.
 | --------- | -------------------------------- | -------------------------------------------------- |
 | `asset`   | `charger-001` vai UUID           | filtrēt pēc aktīva                                 |
 | `device`  | `charger-001` vai UUID           | filtrēt pēc ierīces (`device_uid` vai UUID)        |
+| `sensor`  | `sensor-000001` vai UUID         | filtrēt pēc sensora (`code` vai UUID) — Phase 7    |
 | `metric`  | `temperature_c` vai UUID         | filtrēt pēc metrikas atslēgas                      |
 | `from`    | `2026-05-17T08:00:00+00:00`      | apakšējā robeža `timestamp` laukā (ieskaitot)      |
 | `to`      | `2026-05-17T09:00:00+00:00`      | augšējā robeža `timestamp` laukā (ieskaitot)       |
@@ -117,6 +119,9 @@ curl "http://localhost:8000/api/measurements/?asset=charger-001&limit=5"
 curl "http://localhost:8000/api/measurements/?metric=temperature_c&from=2026-05-17T08:00:00%2B00:00"
 
 curl "http://localhost:8000/api/measurements/?device=charger-001&metric=voltage_v&limit=1"
+
+# Phase 7, Task 4A: precīza sensor + metric timeline
+curl "http://localhost:8000/api/measurements/?sensor=sensor-000001&metric=temperature_c&from=2026-05-17T08:00:00Z&to=2026-05-17T10:00:00Z&limit=1000"
 ```
 
 ### Atbildes piemērs (saīsināts)
@@ -153,9 +158,15 @@ curl "http://localhost:8000/api/measurements/?device=charger-001&metric=voltage_
 | `severity`   | `info`, `warning`, `error`, `critical` | nopietnības līmenis                                |
 | `asset`      | `charger-001` vai UUID           | filtrēt pēc aktīva                                       |
 | `device`     | `charger-001` vai UUID           | filtrēt pēc ierīces                                      |
+| `sensor`     | `sensor-000001` vai UUID         | filtrēt pēc sensora — Phase 7, Task 4A                   |
+| `metric`     | `temperature_c` vai UUID         | filtrēt pēc metrikas — Phase 7, Task 4A                  |
 | `from`       | `2026-05-17T08:00:00+00:00`      | apakšējā robeža `detected_at` laukā                      |
 | `to`         | `2026-05-17T09:00:00+00:00`      | augšējā robeža `detected_at` laukā                       |
 | `limit`      | `1..1000`                        | rezultātu skaits (noklusētais 100)                       |
+
+Visi filtri ir AND kombinējami. Nederīgs `severity`, `status`, `event_type`,
+`from`, `to` vai `limit` atgriež HTTP `400` ar lasāmu JSON ziņu, piem.,
+`{"severity": "invalid value 'bogus'. Allowed: ['critical', 'error', 'info', 'warning']"}`.
 
 ### Piemēri
 
@@ -165,7 +176,33 @@ curl "http://localhost:8000/api/events/?status=open"
 curl "http://localhost:8000/api/events/?event_type=threshold_anomaly&severity=warning&limit=20"
 
 curl "http://localhost:8000/api/events/?asset=charger-001&from=2026-05-17T00:00:00%2B00:00"
+
+# Phase 7, Task 4A: pin to one sensor + metric
+curl "http://localhost:8000/api/events/?sensor=sensor-000001&metric=temperature_c&status=open"
 ```
+
+### EventSerializer lauki
+
+Notikumu galapunkti (`/api/events/`, `/api/events/{id}/` un
+`/api/assets/{id}/events/`) atgriež šādus laukus:
+
+```
+id, event_type, severity, status,
+site, site_code,
+asset, asset_code,
+device, device_uid,
+sensor, sensor_code,
+metric, metric_key,
+measurement, raw_message,
+title, description,
+detected_at, acknowledged_at, closed_at,
+source, payload,
+created_at, updated_at
+```
+
+Phase 7, Task 4A dashboardam ir nepieciešami visi `*_code`/`*_uid` lauki
+un `measurement`/`raw_message` FK ID — tie ir pieejami visos notikumu
+saraksta ierakstos.
 
 ## Aktīva stāvokļa (`asset state`) ielase
 

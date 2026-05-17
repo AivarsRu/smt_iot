@@ -11,12 +11,15 @@ import datetime
 
 from django.test import TestCase
 
-from apps.assets.models import Asset, AssetType, Device, Sensor, Site
+from apps.assets.models import Asset, AssetType, Device, Sensor, SensorMetric, Site
 from apps.core.models import DataType, OperationalStatus
 from apps.digital_twin.models import AssetState
 from apps.events.models import Event, EventType, Severity
 from apps.iot_config.models import MetricDefinition
-from apps.mqtt_ingestion.services.ingestion_service import process_mqtt_message
+from apps.mqtt_ingestion.services.ingestion_service import (
+    process_mqtt_message,
+    resolve_sensor_for_metric,
+)
 from apps.mqtt_ingestion.services.payload_validator import coerce_payload, validate_telemetry_payload
 from apps.mqtt_ingestion.services.topic_parser import ParsedTopic, parse_topic
 from apps.mqtt_ingestion.exceptions import TopicParseError
@@ -568,6 +571,106 @@ class MetricDataTypeTest(IngestionIntegrationBase):
         self.assertEqual(m.value_text, "charging_fast")
 
 
+# ── Sensor resolution (SensorMetric) tests ────────────────────────────────────
+
+class ResolveSensorForMetricTest(IngestionIntegrationBase):
+    """Exercise ``resolve_sensor_for_metric`` directly."""
+
+    def test_returns_single_sensor_when_one_sensormetric(self):
+        SensorMetric.objects.create(sensor=self.sensor, metric=self.m_voltage)
+        sensor, warning = resolve_sensor_for_metric(self.device, self.m_voltage)
+        self.assertEqual(sensor, self.sensor)
+        self.assertEqual(warning, "")
+
+    def test_falls_back_to_only_sensor_with_warning(self):
+        sensor, warning = resolve_sensor_for_metric(self.device, self.m_voltage)
+        self.assertEqual(sensor, self.sensor)
+        self.assertIn("No SensorMetric", warning)
+        self.assertIn(self.m_voltage.key, warning)
+
+    def test_no_sensors_returns_none_with_warning(self):
+        # Remove the single sensor created by the base setUp.
+        self.sensor.delete()
+        sensor, warning = resolve_sensor_for_metric(self.device, self.m_voltage)
+        self.assertIsNone(sensor)
+        self.assertIn("Cannot resolve sensor", warning)
+
+    def test_multiple_sensormetric_picks_first_with_warning(self):
+        sensor_b = Sensor.objects.create(
+            device=self.device, code="aux", name="Aux Sensor",
+        )
+        SensorMetric.objects.create(
+            sensor=self.sensor, metric=self.m_voltage, sort_order=1,
+        )
+        SensorMetric.objects.create(
+            sensor=sensor_b, metric=self.m_voltage, sort_order=2,
+        )
+        sensor, warning = resolve_sensor_for_metric(self.device, self.m_voltage)
+        self.assertEqual(sensor, self.sensor)
+        self.assertIn("Ambiguous", warning)
+
+    def test_never_assigns_sensor_from_other_device(self):
+        other_site = _make_site("other_site")
+        other_asset = _make_asset(other_site, "other-001")
+        other_device = _make_device(other_site, other_asset, "other-001")
+        other_sensor = Sensor.objects.create(
+            device=other_device, code="main", name="Other Main",
+        )
+        SensorMetric.objects.create(
+            sensor=other_sensor, metric=self.m_voltage,
+        )
+        # Remove the sensor on self.device so the only SensorMetric in DB
+        # belongs to other_device. resolve_sensor_for_metric must NOT use
+        # it.
+        self.sensor.delete()
+        sensor, warning = resolve_sensor_for_metric(self.device, self.m_voltage)
+        self.assertIsNone(sensor)
+        self.assertNotEqual(sensor, other_sensor)
+
+
+class IngestionSensorResolutionTest(IngestionIntegrationBase):
+    """End-to-end checks that ingestion stores the correct ``Measurement.sensor``."""
+
+    def test_measurement_sensor_from_sensor_metric(self):
+        SensorMetric.objects.create(sensor=self.sensor, metric=self.m_voltage)
+        SensorMetric.objects.create(sensor=self.sensor, metric=self.m_temp)
+        process_mqtt_message(DEMO_TOPIC, _demo_payload())
+        m = Measurement.objects.get(
+            raw_message__message_id="test-msg-001", metric__key="voltage_v",
+        )
+        self.assertEqual(m.sensor, self.sensor)
+
+    def test_ingestion_creates_sensor_warning_event_when_no_sensormetric(self):
+        # No SensorMetric rows exist; single-sensor fallback applies and a
+        # validation warning event is recorded so operators see the gap.
+        process_mqtt_message(DEMO_TOPIC, _demo_payload())
+        self.assertTrue(
+            Event.objects.filter(
+                event_type=EventType.VALIDATION_ERROR,
+                severity=Severity.WARNING,
+                title__icontains="Sensor mapping warning",
+            ).exists()
+        )
+
+    def test_ambiguous_mapping_creates_warning_event(self):
+        sensor_b = Sensor.objects.create(
+            device=self.device, code="aux", name="Aux Sensor",
+        )
+        SensorMetric.objects.create(
+            sensor=self.sensor, metric=self.m_voltage, sort_order=1,
+        )
+        SensorMetric.objects.create(
+            sensor=sensor_b, metric=self.m_voltage, sort_order=2,
+        )
+        process_mqtt_message(DEMO_TOPIC, _demo_payload())
+        warning_events = Event.objects.filter(
+            event_type=EventType.VALIDATION_ERROR,
+            title__icontains="Sensor mapping warning",
+            description__icontains="Ambiguous",
+        )
+        self.assertTrue(warning_events.exists())
+
+
 # ── Worker / management-command tests ─────────────────────────────────────────
 #
 # These tests cover the thin MQTT worker layer. The paho client is fully
@@ -947,11 +1050,15 @@ class IngestionThresholdAnalyticsTest(IngestionIntegrationBase):
 
     def setUp(self):
         super().setUp()
-        from apps.analytics.models import ThresholdRule
+        from apps.analytics.models import ThresholdRule, ThresholdRuleScope
+        # Explicit global scope keeps the integration scenario focused on
+        # ingestion → analytics wiring rather than scope semantics; see
+        # apps.analytics.tests for per-scope coverage.
         ThresholdRule.objects.create(
             code="temperature_c_high_warning",
             name="High temperature",
             metric=self.m_temp,
+            scope_level=ThresholdRuleScope.GLOBAL,
             upper_bound=60.0,
             severity="warning",
             is_enabled=True,

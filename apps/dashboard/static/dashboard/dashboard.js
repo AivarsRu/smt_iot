@@ -1,14 +1,16 @@
 /* SMT Digital Solution dashboard — vanilla JavaScript loader.
  *
- * Two pages share this script:
- *   • /dashboard/             ← reads #dashboard-config
- *   • /dashboard/assets/.../  ← reads #asset-detail-config
+ * Four pages share this script:
+ *   • /dashboard/                       ← reads #dashboard-config
+ *   • /dashboard/assets/.../            ← reads #asset-detail-config
+ *   • /dashboard/events/                ← reads #events-list-config
+ *   • /dashboard/events/<id>/           ← reads #event-detail-config
  *
  * The script picks the right initialiser based on which JSON block is
  * present in the DOM. Shared helpers (DOM, formatting, badges, fetch)
- * live at module scope so both initialisers can reuse them.
+ * live at module scope so all initialisers can reuse them.
  *
- * The dashboard is read-only and uses only the public Phase 6 REST API.
+ * The dashboard is read-only and uses only the public Phase 6/7 REST API.
  */
 
 (function () {
@@ -699,7 +701,7 @@
       }
       const thead = el("thead", null, [
         el("tr", null, [
-          "Metrika", "Vērtība", "Vienība", "Laiks", "Kvalitāte",
+          "Metrika", "Sensors", "Vērtība", "Vienība", "Laiks", "Kvalitāte",
         ].map((h) => el("th", { text: h }))),
       ]);
       const tbody = el("tbody");
@@ -707,6 +709,7 @@
         tbody.appendChild(
           el("tr", null, [
             el("td", { text: m.metric_key || "—" }),
+            el("td", { text: m.sensor_code || "—" }),
             el("td", { class: "numeric", text: formatNumber(m.value) }),
             el("td", { text: m.unit || (m.metric_unit || "") }),
             el("td", { class: "numeric", text: formatTimestamp(m.timestamp) }),
@@ -944,9 +947,548 @@
     loadAll();
   }
 
+  // ────────────────────────────────────────────────────────────────────
+  // Events list page (/dashboard/events/)
+  // ────────────────────────────────────────────────────────────────────
+
+  function buildQueryString(params) {
+    const parts = [];
+    Object.entries(params || {}).forEach(([key, value]) => {
+      if (value === null || value === undefined) return;
+      const str = String(value).trim();
+      if (str === "") return;
+      parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(str)}`);
+    });
+    return parts.length ? "?" + parts.join("&") : "";
+  }
+
+  function readFilterForm(form) {
+    // Plain helper that maps form controls keyed by ``name`` to their
+    // current value. Empty strings are returned as ``""`` so callers
+    // can decide whether to skip them — buildQueryString skips empties.
+    const out = {};
+    Array.from(form.elements).forEach((node) => {
+      if (!node.name) return;
+      if (node.type === "checkbox") {
+        out[node.name] = node.checked ? "true" : "";
+      } else {
+        out[node.name] = node.value;
+      }
+    });
+    return out;
+  }
+
+  function initEventsList(config) {
+    const ENDPOINT = (config.endpoints && config.endpoints.events) || "/api/events/";
+    const DETAIL_TPL = config.eventDetailUrlTemplate || "";
+    const ASSET_TPL = config.assetDetailUrlTemplate || "";
+
+    const form = $("events-filter");
+    const wrapper = $("events-table-wrapper");
+    const meta = $("events-meta");
+    const errBox = $("events-error");
+    const emptyBox = $("events-empty");
+    const loadingBox = $("events-loading");
+
+    function setLoading(active) {
+      if (loadingBox) loadingBox.hidden = !active;
+    }
+
+    function showError(message) {
+      if (!errBox) return;
+      errBox.hidden = false;
+      errBox.textContent = message;
+    }
+
+    function clearStates() {
+      if (errBox) {
+        errBox.hidden = true;
+        errBox.textContent = "";
+      }
+      if (emptyBox) emptyBox.hidden = true;
+      if (meta) meta.textContent = "";
+    }
+
+    function renderTable(items) {
+      if (!wrapper) return;
+      clear(wrapper);
+      if (!items || items.length === 0) {
+        if (emptyBox) emptyBox.hidden = false;
+        return;
+      }
+
+      const headers = [
+        "Tips", "Smagums", "Statuss", "Virsraksts",
+        "Aktīvs", "Ierīce", "Sensors", "Metrika",
+        "Atklāts", "Slēgts", "Avots", "Detaļas",
+      ];
+      const thead = el("thead", null, [
+        el("tr", null, headers.map((h) => el("th", { text: h }))),
+      ]);
+      const tbody = el("tbody");
+      items.forEach((row) => {
+        const detailUrl = fillTemplate(DETAIL_TPL, "__ID__", row.id);
+        const assetUrl = fillTemplate(ASSET_TPL, "__CODE__", row.asset_code);
+        tbody.appendChild(
+          el("tr", { "data-role": "event-row", "data-event-id": row.id }, [
+            el("td", { class: "monospace", text: row.event_type || "—" }),
+            el("td", null, [severityBadge(row.severity)]),
+            el("td", null, [eventStatusBadge(row.status)]),
+            el("td", { text: row.title || "—" }),
+            el("td", null, [
+              assetUrl && row.asset_code
+                ? el("a", { href: assetUrl, text: row.asset_code })
+                : document.createTextNode(row.asset_code || "—"),
+            ]),
+            el("td", { class: "monospace",
+                       text: row.device_uid || "—" }),
+            el("td", { class: "monospace",
+                       text: row.sensor_code || "—" }),
+            el("td", { class: "monospace",
+                       text: row.metric_key || "—" }),
+            el("td", { text: formatTimestamp(row.detected_at) }),
+            el("td", { text: formatTimestamp(row.closed_at) }),
+            el("td", { class: "monospace", text: row.source || "—" }),
+            el("td", { class: "row-actions" }, [
+              detailUrl
+                ? el("a", {
+                    href: detailUrl,
+                    "data-role": "event-detail-link",
+                    text: "Atvērt",
+                  })
+                : document.createTextNode("—"),
+            ]),
+          ]),
+        );
+      });
+      const table = el("table", { class: "data-table",
+                                  "data-role": "events-table" },
+                      [thead, tbody]);
+      wrapper.appendChild(table);
+    }
+
+    async function loadEvents() {
+      clearStates();
+      setLoading(true);
+      const filters = readFilterForm(form);
+      const url = ENDPOINT + buildQueryString(filters);
+      try {
+        const data = await fetchJson(url);
+        // DRF list responses are bare arrays (no pagination wrapper).
+        const items = Array.isArray(data) ? data : (data.results || []);
+        renderTable(items);
+        if (meta) {
+          meta.textContent = `Parādīti ${items.length} notikumi (${url}).`;
+        }
+      } catch (err) {
+        renderTable([]);
+        showError(
+          `Kļūda ielādējot notikumus: ${err.status || ""} ${err.message || err}`,
+        );
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    // Initial population — read URL query string so deep links survive.
+    const url = new URL(window.location.href);
+    Array.from(form.elements).forEach((node) => {
+      if (!node.name) return;
+      const fromUrl = url.searchParams.get(node.name);
+      if (fromUrl !== null) node.value = fromUrl;
+    });
+
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      loadEvents();
+    });
+    const resetBtn = $("events-reset");
+    if (resetBtn) {
+      resetBtn.addEventListener("click", () => {
+        form.reset();
+        loadEvents();
+      });
+    }
+    const refreshBtn = $("events-refresh");
+    if (refreshBtn) refreshBtn.addEventListener("click", () => loadEvents());
+
+    loadEvents();
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+  // Event detail page (/dashboard/events/<id>/)
+  // ────────────────────────────────────────────────────────────────────
+
+  function renderJsonPayload(obj) {
+    // Pretty-print as JSON with stable spacing so the snapshot is
+    // grep-friendly for operators. Returns a string.
+    try {
+      return JSON.stringify(obj, null, 2);
+    } catch (err) {
+      return String(obj);
+    }
+  }
+
+  function initEventDetail(config) {
+    const EVENT_URL = config.eventDetailUrl;
+    const MEAS_URL = config.measurementsUrl;
+    const EVENTS_LIST_URL = config.eventsListUrl;
+    const ASSET_TPL = config.assetDetailUrlTemplate || "";
+    const PERIODS = Array.isArray(config.periods) ? config.periods : [];
+    const DEFAULT_PERIOD = config.defaultPeriod || "24h";
+    const TIMELINE_LIMIT = config.timelineLimit || 1000;
+
+    let currentEvent = null;       // last successful event payload
+    let currentPeriodId = DEFAULT_PERIOD;
+
+    function showPageError(message) {
+      const banner = $("page-error");
+      if (banner) {
+        banner.hidden = false;
+        clear(banner);
+        banner.appendChild(
+          el("div", { class: "state state--error" }, [
+            el("strong", { text: message }),
+            " ",
+            el("a", { href: EVENTS_LIST_URL,
+                      text: "Atgriezties uz notikumu sarakstu" }),
+          ]),
+        );
+      }
+      [
+        "event-identity-state", "event-context-state",
+        "event-measurement-state", "timeline-state",
+      ].forEach((role) => setState($(role), "empty", "—"));
+    }
+
+    function renderIdentity(event) {
+      const wrapper = $("event-identity");
+      if (!wrapper) return;
+      clear(wrapper);
+
+      const title = $("event-title");
+      if (title) title.textContent = event.title || `Notikums ${event.id}`;
+
+      wrapper.appendChild(
+        el("div", { class: "identity-grid" }, [
+          el("div", { class: "identity-item" }, [
+            el("span", { class: "identity-item__label", text: "Tips" }),
+            el("span", { class: "identity-item__value monospace",
+                          text: event.event_type || "—" }),
+          ]),
+          el("div", { class: "identity-item" }, [
+            el("span", { class: "identity-item__label", text: "Smagums" }),
+            el("span", { class: "identity-item__value" },
+                [severityBadge(event.severity)]),
+          ]),
+          el("div", { class: "identity-item" }, [
+            el("span", { class: "identity-item__label", text: "Statuss" }),
+            el("span", { class: "identity-item__value" },
+                [eventStatusBadge(event.status)]),
+          ]),
+          el("div", { class: "identity-item" }, [
+            el("span", { class: "identity-item__label", text: "Avots" }),
+            el("span", { class: "identity-item__value monospace",
+                          text: event.source || "—" }),
+          ]),
+          el("div", { class: "identity-item" }, [
+            el("span", { class: "identity-item__label", text: "Atklāts" }),
+            el("span", { class: "identity-item__value",
+                          text: formatTimestamp(event.detected_at) }),
+          ]),
+          el("div", { class: "identity-item" }, [
+            el("span", { class: "identity-item__label",
+                          text: "Apstiprināts" }),
+            el("span", { class: "identity-item__value",
+                          text: formatTimestamp(event.acknowledged_at) }),
+          ]),
+          el("div", { class: "identity-item" }, [
+            el("span", { class: "identity-item__label", text: "Slēgts" }),
+            el("span", { class: "identity-item__value",
+                          text: formatTimestamp(event.closed_at) }),
+          ]),
+        ]),
+      );
+      if (event.description) {
+        wrapper.appendChild(
+          el("p", { class: "event-detail__description",
+                    text: event.description }),
+        );
+      }
+    }
+
+    function renderContext(event) {
+      const wrapper = $("event-context");
+      if (!wrapper) return;
+      clear(wrapper);
+
+      const assetUrl = fillTemplate(ASSET_TPL, "__CODE__", event.asset_code);
+
+      const rows = [
+        ["Site", event.site_code],
+        ["Aktīvs", event.asset_code, assetUrl],
+        ["Ierīce", event.device_uid],
+        ["Sensors", event.sensor_code],
+        ["Metrika", event.metric_key],
+        ["Mērījuma ID", event.measurement],
+        ["Raw message ID", event.raw_message],
+      ];
+      rows.forEach(([label, value, href]) => {
+        const valueNode = href && value
+          ? el("a", { href: href, text: String(value),
+                      "data-role": "context-asset-link" })
+          : document.createTextNode(value ? String(value) : "—");
+        wrapper.appendChild(
+          el("div", { class: "context-grid__row" }, [
+            el("span", { class: "context-grid__label", text: label }),
+            el("span", { class: "context-grid__value monospace" },
+                [valueNode]),
+          ]),
+        );
+      });
+    }
+
+    async function renderMeasurementBlock(event) {
+      const root = $("event-measurement");
+      if (!root) return;
+      clear(root);
+      if (!event.measurement) {
+        root.appendChild(
+          el("div", { class: "state state--empty",
+                       text: "Šim notikumam nav saistīta mērījuma." }),
+        );
+        return;
+      }
+      // ``event.measurement`` is the FK id. Fetch via the list endpoint
+      // for the measurement detail; if not available there, fall back
+      // to inline summary from sensor/metric of the event itself.
+      try {
+        // /api/measurements/{id}/ exists via DRF DefaultRouter retrieve.
+        const url = MEAS_URL.replace(/\/$/, "") + "/" + encodeURIComponent(event.measurement) + "/";
+        const m = await fetchJson(url);
+        root.appendChild(
+          el("dl", { class: "measurement-list" }, [
+            el("dt", { text: "Laiks" }),
+            el("dd", { text: formatTimestamp(m.timestamp) }),
+            el("dt", { text: "Vērtība" }),
+            el("dd", { text: `${formatNumber(m.value)} ${m.unit || ""}`.trim() }),
+            el("dt", { text: "Sensors" }),
+            el("dd", { class: "monospace", text: m.sensor_code || "—" }),
+            el("dt", { text: "Metrika" }),
+            el("dd", { class: "monospace", text: m.metric_key || "—" }),
+            el("dt", { text: "Kvalitāte" }),
+            el("dd", { text: m.quality || "—" }),
+            el("dt", { text: "Raw message" }),
+            el("dd", { class: "monospace", text: m.raw_message || "—" }),
+          ]),
+        );
+      } catch (err) {
+        root.appendChild(
+          el("div", { class: "state state--error",
+                       text: `Mērījumu nevarēja ielādēt: ${err.message || err}` }),
+        );
+      }
+    }
+
+    function renderPayload(event) {
+      const node = $("event-payload");
+      if (!node) return;
+      node.textContent = renderJsonPayload(event.payload || {});
+    }
+
+    function renderPeriodButtons() {
+      const root = $("period-buttons");
+      if (!root) return;
+      clear(root);
+      PERIODS.forEach((p) => {
+        const btn = el("button", {
+          type: "button",
+          class: "period-btn",
+          "data-role": "period-btn",
+          "data-period-id": p.id,
+          text: p.label,
+        });
+        btn.addEventListener("click", () => {
+          currentPeriodId = p.id;
+          updatePeriodButtonsState();
+          loadTimeline();
+        });
+        root.appendChild(btn);
+      });
+      updatePeriodButtonsState();
+    }
+
+    function updatePeriodButtonsState() {
+      document.querySelectorAll('[data-role="period-btn"]').forEach((btn) => {
+        const active = btn.dataset.periodId === currentPeriodId;
+        btn.classList.toggle("period-btn--active", active);
+        btn.setAttribute("aria-pressed", active ? "true" : "false");
+      });
+    }
+
+    function computePeriodRange(periodId, anchor) {
+      // Anchor: event.detected_at converted to a Date. ``periodId='all'``
+      // returns no range (timeline shows all available data).
+      const period = PERIODS.find((p) => p.id === periodId);
+      if (!period || period.hours === null) {
+        return { from: null, to: null };
+      }
+      const anchorMs = anchor.getTime();
+      const halfWindow = (period.hours * 3600 * 1000) / 2;
+      // Centre the window on detected_at but clip the "to" side so the
+      // chart does not project into the future beyond now.
+      const nowMs = Date.now();
+      let toMs = anchorMs + halfWindow;
+      if (toMs > nowMs) toMs = nowMs;
+      const fromMs = toMs - period.hours * 3600 * 1000;
+      return {
+        from: new Date(fromMs).toISOString(),
+        to: new Date(toMs).toISOString(),
+      };
+    }
+
+    function readCustomRange() {
+      const f = $("timeline-from");
+      const t = $("timeline-to");
+      const fromValue = f && f.value ? new Date(f.value).toISOString() : null;
+      const toValue = t && t.value ? new Date(t.value).toISOString() : null;
+      return { from: fromValue, to: toValue };
+    }
+
+    async function loadTimeline() {
+      const section = $("event-timeline-section");
+      const stateNode = $("timeline-state");
+      const summary = $("timeline-summary");
+      const chart = $("timeline-chart");
+
+      if (!currentEvent || !section) return;
+      const sensorCode = currentEvent.sensor_code;
+      const metricKey = currentEvent.metric_key;
+      if (!sensorCode || !metricKey) {
+        section.hidden = true;
+        return;
+      }
+      section.hidden = false;
+
+      let range;
+      if (currentPeriodId === "custom") {
+        range = readCustomRange();
+      } else {
+        range = computePeriodRange(
+          currentPeriodId, new Date(currentEvent.detected_at),
+        );
+      }
+
+      const params = {
+        sensor: sensorCode,
+        metric: metricKey,
+        limit: TIMELINE_LIMIT,
+      };
+      if (range.from) params.from = range.from;
+      if (range.to) params.to = range.to;
+
+      const url = MEAS_URL + buildQueryString(params);
+      setState(stateNode, "loading", "Ielādē…");
+      if (summary) summary.textContent = "";
+      clear(chart);
+
+      try {
+        const measurements = await fetchJson(url);
+        const items = Array.isArray(measurements) ? measurements : [];
+        if (items.length === 0) {
+          setState(stateNode, "empty",
+            "Nav mērījumu izvēlētajā periodā.");
+          return;
+        }
+        // Measurements arrive newest-first; sort oldest-first for the chart.
+        const points = items
+          .map((m) => [new Date(m.timestamp), m.value])
+          .filter((p) => !Number.isNaN(p[0].getTime())
+                        && p[1] !== null && p[1] !== undefined)
+          .sort((a, b) => a[0] - b[0]);
+        const drawn = renderSparkline(chart, points);
+        if (!drawn) {
+          setState(stateNode, "empty", "Mērījumi neizdevās attēlot.");
+          return;
+        }
+        setState(stateNode, "ok", "");
+        stateNode.hidden = true;
+
+        if (summary) {
+          const values = points.map((p) => p[1]);
+          const min = Math.min.apply(null, values);
+          const max = Math.max.apply(null, values);
+          const last = points[points.length - 1];
+          clear(summary);
+          summary.appendChild(el("span", null, [
+            el("strong", { text: "Pēdējais: " }),
+            document.createTextNode(`${formatNumber(last[1])} (${formatTimestamp(last[0])})`),
+          ]));
+          summary.appendChild(el("span", { class: "timeline-summary__pill",
+                                           text: `min ${formatNumber(min)}` }));
+          summary.appendChild(el("span", { class: "timeline-summary__pill",
+                                           text: `max ${formatNumber(max)}` }));
+          summary.appendChild(el("span", { class: "timeline-summary__pill",
+                                           text: `${points.length} punkti` }));
+        }
+
+        const ctx = $("event-timeline-context");
+        if (ctx) {
+          ctx.textContent = `Sensors ${sensorCode}, metrika ${metricKey}.`;
+        }
+      } catch (err) {
+        setState(stateNode, "error",
+          `Kļūda ielādējot timeline: ${err.message || err}`);
+      }
+    }
+
+    function bindCustomRangeForm() {
+      const form = $("timeline-custom");
+      if (!form) return;
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        currentPeriodId = "custom";
+        updatePeriodButtonsState();
+        loadTimeline();
+      });
+    }
+
+    async function loadEvent() {
+      try {
+        const event = await fetchJson(EVENT_URL);
+        currentEvent = event;
+        renderIdentity(event);
+        renderContext(event);
+        renderPayload(event);
+        renderMeasurementBlock(event);
+        renderPeriodButtons();
+        loadTimeline();
+      } catch (err) {
+        if (err.status === 404) {
+          showPageError("Notikums netika atrasts (404).");
+        } else {
+          showPageError(`Neizdevās ielādēt notikumu: ${err.message || err}`);
+        }
+      }
+    }
+
+    bindCustomRangeForm();
+    loadEvent();
+  }
+
   // ── Page dispatch ───────────────────────────────────────────────────
 
   document.addEventListener("DOMContentLoaded", () => {
+    const eventDetailConfig = readJsonScript("event-detail-config");
+    if (eventDetailConfig) {
+      initEventDetail(eventDetailConfig);
+      return;
+    }
+    const eventsListConfig = readJsonScript("events-list-config");
+    if (eventsListConfig) {
+      initEventsList(eventsListConfig);
+      return;
+    }
     const detailConfig = readJsonScript("asset-detail-config");
     if (detailConfig) {
       initAssetDetail(detailConfig);

@@ -203,7 +203,7 @@ Aplikācija satur vienkāršus eksportus un pārskatus, piemēram, CSV vai Excel
 
 ### Infrastruktūras un ierīču modeļi
 
-`Site` apraksta fizisku vai loģisku lokāciju. `Asset` apraksta digitālā dvīņa objektu. `Device` apraksta fizisku vai simulētu IoT ierīci. `Sensor` apraksta mērījumu avotu ierīcē. `MetricDefinition` apraksta atļauto metriku, mērvienību, datu tipu un normālās vērtības intervālu.
+`Site` apraksta fizisku vai loģisku lokāciju. `Asset` apraksta digitālā dvīņa objektu. `Device` apraksta fizisku vai simulētu IoT ierīci. `Sensor` apraksta mērījumu avotu ierīcē. `MetricDefinition` apraksta atļauto metriku, mērvienību, datu tipu un normālās vērtības intervālu. `SensorMetric` (caur-modelis `apps.assets`) deklarē, kuras `MetricDefinition` rindas konkrēts `Sensor` spēj ražot — tas ir vienīgais autoritatīvais sensora–metrikas saskaņojuma avots ingestion, simulatora un analītikas slāņos. Sk. arī `docs/data_model.md`.
 
 ### Telemetrijas modeļi
 
@@ -215,11 +215,11 @@ Aplikācija satur vienkāršus eksportus un pārskatus, piemēram, CSV vai Excel
 
 ### Analītikas un notikumu modeļi
 
-`ThresholdRule` vai līdzvērtīgs modelis definē anomāliju sliekšņus. `AnomalyEvent` saglabā konstatētos notikumus, to statusu un saistību ar objektu vai mērījumu.
+`ThresholdRule` vai līdzvērtīgs modelis definē anomāliju sliekšņus. Sliekšņu apjoms var būt globāls, `Site`-, `Asset`-, `Device`-, vai **`Sensor`**-līmenī. `AnomalyEvent`/`Event` saglabā konstatētos notikumus, to statusu un saistību ar objektu, ierīci, sensoru vai mērījumu.
 
 ### Simulatora modeļi
 
-`SimulatorScenario` definē simulācijas scenāriju. `SimulatorRun` glabā konkrētas izpildes diagnostiku. `DeviceProfile` un `MetricProfile` definē, ko simulators ģenerē. `AnomalyScenario` definē demonstrējamas novirzes.
+`SimulatorScenario` definē simulācijas scenāriju. `SimulatorRun` glabā konkrētas izpildes diagnostiku. `DeviceProfile` un `MetricProfile` definē, ko simulators ģenerē. `SimulatorMetricProfile.sensor` saista katru ģenerējamo metriku ar konkrētu `Sensor` (tā lai vērtības atspoguļotu reālo sensoru-centrēto modeli). `AnomalyScenario` definē demonstrējamas novirzes.
 
 ## MQTT komunikāciju modelis
 

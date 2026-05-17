@@ -198,6 +198,15 @@ USE_TZ = True
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
+# Authentication routing for the operator dashboard.
+# ``LOGIN_URL`` is consumed by ``LoginRequiredMixin`` / ``@login_required``;
+# ``LOGIN_REDIRECT_URL`` is where Django sends a freshly-authenticated user
+# when no ``?next=`` parameter was provided; ``LOGOUT_REDIRECT_URL`` brings
+# them back to the public welcome screen.
+LOGIN_URL = "accounts:login"
+LOGIN_REDIRECT_URL = "dashboard:overview"
+LOGOUT_REDIRECT_URL = "core:welcome"
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 

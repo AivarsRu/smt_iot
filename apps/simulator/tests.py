@@ -15,7 +15,7 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
-from apps.assets.models import Asset, AssetType, Device, Site
+from apps.assets.models import Asset, AssetType, Device, Sensor, SensorMetric, Site
 from apps.iot_config.models import DeviceProfile, MetricDefinition
 from apps.simulator.models import (
     SimulatorMetricProfile,
@@ -28,7 +28,11 @@ from apps.simulator.services.mqtt_publisher import (
     SimulatorPublishError,
     publish_message,
 )
-from apps.simulator.services.payload_generator import generate_payload, _generate_value
+from apps.simulator.services.payload_generator import (
+    SimulatorMetricProfileConfigError,
+    _generate_value,
+    generate_payload,
+)
 from apps.simulator.services.topic_builder import SimulatorConfigError, build_telemetry_topic
 
 
@@ -86,9 +90,43 @@ def _make_scenario_device(scenario, device, profile=None):
     )
 
 
-def _make_metric_profile(scenario_device, metric, base_value=50.0, noise=0.0, mode="constant"):
+def _make_sensor(device, code="main", sensor_type="composite"):
+    return Sensor.objects.create(
+        device=device,
+        code=code,
+        name=f"Sensor {code}",
+        sensor_type=sensor_type,
+    )
+
+
+def _make_sensor_metric(sensor, metric, is_required=False, sort_order=1):
+    return SensorMetric.objects.create(
+        sensor=sensor, metric=metric,
+        is_required=is_required, sort_order=sort_order,
+    )
+
+
+def _make_metric_profile(
+    scenario_device, metric, sensor=None,
+    base_value=50.0, noise=0.0, mode="constant",
+):
+    """
+    Build a SimulatorMetricProfile linked to a Sensor on the same Device as
+    ``scenario_device``. The sensor is auto-created if not supplied so existing
+    tests keep working with the sensor-centric data model.
+    """
+    if sensor is None:
+        device = scenario_device.device
+        sensor = (
+            device.sensors.filter(is_active=True).order_by("created_at", "id").first()
+            or _make_sensor(device)
+        )
+    # Make sure the SensorMetric capability row exists for clean(); the
+    # generator does not require it, but model.clean() does.
+    SensorMetric.objects.get_or_create(sensor=sensor, metric=metric)
     return SimulatorMetricProfile.objects.create(
         scenario_device=scenario_device,
+        sensor=sensor,
         metric=metric,
         base_value=base_value,
         noise_amplitude=noise,
@@ -173,14 +211,32 @@ class SimulatorMetricProfileModelTest(TestCase):
         mp = _make_metric_profile(self.sd, self.metric)
         self.assertIn("voltage_v", str(mp))
 
-    def test_unique_scenario_device_metric_constraint(self):
-        _make_metric_profile(self.sd, self.metric)
+    def test_unique_scenario_device_sensor_metric_constraint(self):
+        """The new uniqueness is (scenario_device, sensor, metric)."""
+        mp = _make_metric_profile(self.sd, self.metric)
         with self.assertRaises(Exception):
             SimulatorMetricProfile.objects.create(
                 scenario_device=self.sd,
+                sensor=mp.sensor,
                 metric=self.metric,
                 base_value=60.0,
             )
+
+    def test_same_metric_on_two_sensors_allowed(self):
+        """
+        Two sensors on the same Device can each have their own profile for
+        the same MetricDefinition — the uniqueness includes sensor.
+        Note: at payload-generation time this is rejected because the flat
+        MQTT payload cannot represent two values for one metric key, but
+        the data model itself allows the rows.
+        """
+        sensor_a = _make_sensor(self.device, code="sensor-a")
+        sensor_b = _make_sensor(self.device, code="sensor-b")
+        _make_metric_profile(self.sd, self.metric, sensor=sensor_a)
+        _make_metric_profile(self.sd, self.metric, sensor=sensor_b)
+        self.assertEqual(
+            SimulatorMetricProfile.objects.filter(scenario_device=self.sd).count(), 2,
+        )
 
 
 class SimulatorRunModelTest(TestCase):
@@ -324,8 +380,11 @@ class PayloadGeneratorTest(TestCase):
     @override_settings(SMT_ENV="dev")
     def test_disabled_metric_is_excluded(self):
         disabled_metric = _make_metric(key="power_w", unit="W")
+        sensor = self.device.sensors.first()
+        SensorMetric.objects.get_or_create(sensor=sensor, metric=disabled_metric)
         SimulatorMetricProfile.objects.create(
             scenario_device=self.sd,
+            sensor=sensor,
             metric=disabled_metric,
             base_value=100.0,
             is_enabled=False,
@@ -415,6 +474,70 @@ class PayloadGeneratorTest(TestCase):
         for _ in range(50):
             v = _generate_value(mp, rng)
             self.assertLessEqual(v, 100.0)
+
+
+# ── Sensor-centric payload generation tests ───────────────────────────────────
+
+class PayloadGeneratorSensorTest(TestCase):
+    """
+    Cover the sensor-centric correctness rules introduced when metrics
+    moved from Device to Sensor (SensorMetric, SimulatorMetricProfile.sensor).
+    """
+
+    @override_settings(SMT_ENV="dev")
+    def setUp(self):
+        self.site = _make_site(code="default_demo")
+        self.asset = _make_asset(self.site, code="charger-001",
+                                 asset_type=AssetType.CHARGER)
+        self.device = _make_device(self.site, self.asset, uid="charger-001")
+        self.scenario = _make_scenario(self.site)
+        self.sd = _make_scenario_device(self.scenario, self.device)
+        self.metric = _make_metric(key="voltage_v", unit="V")
+
+    @override_settings(SMT_ENV="dev")
+    def test_metric_profile_must_have_sensor(self):
+        """Enabled SimulatorMetricProfile without a sensor must fail loudly."""
+        SimulatorMetricProfile.objects.create(
+            scenario_device=self.sd,
+            sensor=None,
+            metric=self.metric,
+            base_value=50.0,
+            is_enabled=True,
+        )
+        with self.assertRaises(SimulatorMetricProfileConfigError):
+            generate_payload(self.sd, message_id="m-no-sensor")
+
+    @override_settings(SMT_ENV="dev")
+    def test_duplicate_metric_from_two_sensors_raises(self):
+        """
+        Two enabled profiles for the same metric on the same scenario_device
+        but different sensors cannot be serialised into the flat MQTT
+        payload — the generator must refuse to silently overwrite values.
+        """
+        sensor_a = _make_sensor(self.device, code="sensor-a")
+        sensor_b = _make_sensor(self.device, code="sensor-b")
+        _make_metric_profile(self.sd, self.metric, sensor=sensor_a, base_value=10.0)
+        _make_metric_profile(self.sd, self.metric, sensor=sensor_b, base_value=20.0)
+        with self.assertRaises(SimulatorMetricProfileConfigError):
+            generate_payload(self.sd, message_id="m-dup")
+
+    @override_settings(SMT_ENV="dev")
+    def test_sensor_must_belong_to_same_device(self):
+        """A sensor referencing another Device must be flagged as misconfig."""
+        other_site = _make_site(code="other_site")
+        other_asset = _make_asset(other_site, code="other-001")
+        other_device = _make_device(other_site, other_asset, uid="other-001")
+        wrong_sensor = _make_sensor(other_device, code="wrong")
+        SensorMetric.objects.create(sensor=wrong_sensor, metric=self.metric)
+        SimulatorMetricProfile.objects.create(
+            scenario_device=self.sd,
+            sensor=wrong_sensor,
+            metric=self.metric,
+            base_value=10.0,
+            is_enabled=True,
+        )
+        with self.assertRaises(SimulatorMetricProfileConfigError):
+            generate_payload(self.sd, message_id="m-wrong-sensor")
 
 
 # ── Management command tests ──────────────────────────────────────────────────

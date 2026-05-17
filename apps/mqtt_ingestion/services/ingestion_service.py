@@ -239,7 +239,7 @@ def _run_pipeline(
     )
 
     # 10. Resolve Site
-    from apps.assets.models import Asset, Device, Sensor, Site  # local import avoids circular
+    from apps.assets.models import Asset, Device, Site  # local import avoids circular
 
     try:
         site = Site.objects.get(code=topic_info.site_code)
@@ -289,8 +289,8 @@ def _run_pipeline(
     raw_message.asset = asset
     raw_message.save(update_fields=["asset"])
 
-    # 13. Resolve Sensor (best effort — never fails ingestion)
-    sensor = Sensor.objects.filter(device=device, is_active=True).first()
+    # 13. Resolve Sensor — now driven by SensorMetric. Per-metric resolution
+    #     happens inside ``_process_one_metric`` via ``resolve_sensor_for_metric``.
 
     # 14 & 15. Create measurements and update state (atomic block for consistency)
     from apps.iot_config.models import MetricDefinition  # local import
@@ -305,13 +305,12 @@ def _run_pipeline(
 
     with transaction.atomic():
         for metric_key, raw_value in metrics_payload.items():
-            result, measurement_obj = _process_one_metric(
+            result, measurement_obj, sensor_warning = _process_one_metric(
                 metric_key=metric_key,
                 raw_value=raw_value,
                 site=site,
                 asset=asset,
                 device=device,
-                sensor=sensor,
                 metric_def_cache=None,  # resolved inside
                 raw_message=raw_message,
                 measurement_ts=measurement_ts,
@@ -332,6 +331,20 @@ def _run_pipeline(
             elif result == "invalid":
                 events_created += _create_invalid_value_event(
                     metric_key, raw_value, site, asset, device, raw_message
+                )
+
+            # Best-effort warning if sensor resolution was ambiguous. The
+            # measurement is still stored using the deterministic first
+            # match (see ``resolve_sensor_for_metric``); the warning event
+            # surfaces the configuration problem to operators.
+            if sensor_warning:
+                events_created += _create_sensor_warning_event(
+                    metric_key=metric_key,
+                    warning=sensor_warning,
+                    site=site,
+                    asset=asset,
+                    device=device,
+                    raw_message=raw_message,
                 )
 
         # 16. Update RawMessage processing status
@@ -506,30 +519,34 @@ def _process_one_metric(
     site,
     asset,
     device,
-    sensor,
     metric_def_cache,
     raw_message,
     measurement_ts,
 ):
     """
     Attempt to create or update a single Measurement.
-    Returns a tuple ``(status, measurement)`` where ``status`` is one of
-    ``'created' | 'updated' | 'unknown' | 'invalid'`` and ``measurement`` is
-    the persisted Measurement object (or ``None`` when nothing was stored).
+    Returns a tuple ``(status, measurement, sensor_warning)`` where:
+      * ``status`` is one of ``'created' | 'updated' | 'unknown' | 'invalid'``,
+      * ``measurement`` is the persisted Measurement object (or ``None``
+        when nothing was stored),
+      * ``sensor_warning`` is a non-empty string when sensor resolution was
+        ambiguous and the caller should emit a warning event.
     """
     from apps.iot_config.models import MetricDefinition
 
     try:
         metric_def = MetricDefinition.objects.get(key=metric_key)
     except MetricDefinition.DoesNotExist:
-        return "unknown", None
+        return "unknown", None, ""
 
     try:
         value_float, value_int, value_bool, value_text = _coerce_metric_value(
             raw_value, metric_def.data_type
         )
     except (TypeError, ValueError):
-        return "invalid", None
+        return "invalid", None, ""
+
+    sensor, sensor_warning = resolve_sensor_for_metric(device, metric_def)
 
     measurement_obj, created = Measurement.objects.update_or_create(
         raw_message=raw_message,
@@ -548,7 +565,85 @@ def _process_one_metric(
             "quality": MeasurementQuality.GOOD,
         },
     )
-    return ("created" if created else "updated"), measurement_obj
+    return ("created" if created else "updated"), measurement_obj, sensor_warning
+
+
+def resolve_sensor_for_metric(device, metric):
+    """
+    Resolve which ``assets.Sensor`` produced the given ``MetricDefinition``
+    for ``device``. Returns ``(sensor_or_None, warning_or_empty_string)``.
+
+    Resolution rules (sensor-centric data model):
+
+    1. Look up active ``SensorMetric`` rows where
+       ``sensor.device == device`` and ``sensor.is_active`` and the row
+       itself is active. If exactly one match exists, use that sensor.
+    2. If no SensorMetric match exists but the device has exactly one
+       active sensor, fall back to that sensor (backwards compatibility
+       for devices that have not been migrated yet) and return a warning
+       so operators see the missing SensorMetric configuration.
+    3. If multiple SensorMetric matches exist, pick the first
+       deterministically (by ``sort_order`` then ``created_at``) so that
+       ingestion is not blocked, but return a warning so the ambiguous
+       configuration is visible in the dashboard.
+    4. If no match and the device has zero or multiple active sensors
+       with no SensorMetric, leave the measurement's sensor null and
+       return a warning. Never assign a sensor from another device.
+    """
+    from apps.assets.models import Sensor, SensorMetric
+
+    matches = list(
+        SensorMetric.objects.select_related("sensor", "sensor__device")
+        .filter(
+            sensor__device=device,
+            sensor__is_active=True,
+            metric=metric,
+            is_active=True,
+        )
+        .order_by("sort_order", "created_at", "id")
+    )
+    if len(matches) == 1:
+        return matches[0].sensor, ""
+    if len(matches) > 1:
+        sensor_codes = ", ".join(sorted({m.sensor.code for m in matches}))
+        return (
+            matches[0].sensor,
+            (
+                f"Ambiguous sensor mapping for metric '{metric.key}' on "
+                f"device '{device.device_uid}': {len(matches)} SensorMetric "
+                f"rows matched (sensors: {sensor_codes}). Using "
+                f"'{matches[0].sensor.code}' deterministically."
+            ),
+        )
+
+    # No SensorMetric match — fall back to single-sensor heuristic.
+    active_sensors = list(
+        Sensor.objects.filter(device=device, is_active=True)
+        .order_by("created_at", "id")
+    )
+    if len(active_sensors) == 1:
+        only = active_sensors[0]
+        return (
+            only,
+            (
+                f"No SensorMetric defined for metric '{metric.key}' on "
+                f"device '{device.device_uid}'; falling back to the only "
+                f"active sensor '{only.code}'. Please add a SensorMetric "
+                f"row to make the mapping explicit."
+            ),
+        )
+
+    # Either no sensors at all, or multiple sensors with no explicit
+    # mapping — refuse to guess and surface a warning. The measurement
+    # still gets stored with ``sensor=None`` so telemetry is not lost.
+    return (
+        None,
+        (
+            f"Cannot resolve sensor for metric '{metric.key}' on device "
+            f"'{device.device_uid}': no SensorMetric and "
+            f"{len(active_sensors)} active sensor(s) on the device."
+        ),
+    )
 
 
 def _coerce_metric_value(raw_value, data_type: str) -> tuple:
@@ -602,6 +697,28 @@ def _create_invalid_value_event(metric_key, raw_value, site, asset, device, raw_
         severity=Severity.WARNING,
         title=f"Invalid value for metric '{metric_key}'",
         description=f"Could not convert value {raw_value!r} for metric '{metric_key}'",
+        site=site,
+        asset=asset,
+        device=device,
+        raw_message=raw_message,
+    )
+    return 1
+
+
+def _create_sensor_warning_event(
+    *, metric_key, warning, site, asset, device, raw_message,
+) -> int:
+    """
+    Surface a sensor-resolution warning as a low-severity validation event.
+    Telemetry persistence is unaffected; this only documents configuration
+    issues that operators should fix (missing SensorMetric, ambiguous
+    mapping, etc.).
+    """
+    _create_event(
+        event_type=EventType.VALIDATION_ERROR,
+        severity=Severity.WARNING,
+        title=f"Sensor mapping warning for metric '{metric_key}'",
+        description=warning,
         site=site,
         asset=asset,
         device=device,

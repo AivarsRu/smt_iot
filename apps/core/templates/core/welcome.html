@@ -1,0 +1,67 @@
+{% load static %}
+<!doctype html>
+<html lang="lv">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SMT Digital Solution</title>
+  <link rel="stylesheet" href="{% static 'dashboard/dashboard.css' %}">
+</head>
+<body>
+  <header class="page-header" role="banner">
+    <div class="page-container">
+      <div class="page-header__brand">
+        <h1 class="page-header__title">SMT Digital Solution</h1>
+        <p class="page-header__subtitle">
+          IoT infrastructure monitoring and digital twin prototype
+        </p>
+      </div>
+      <div class="page-header__meta">
+        <a class="btn btn--primary"
+           href="{% url 'accounts:login' %}"
+           data-role="welcome-login-link">Pieslēgties</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="page-container" role="main">
+    <section class="dashboard-section" aria-labelledby="welcome-heading">
+      <div class="section-header">
+        <h2 id="welcome-heading" class="section-header__title">
+          Sveicināti SMT digitālā risinājuma prototipā
+        </h2>
+        <p class="section-header__hint">
+          Prototips simulē IoT ierīces, apstrādā telemetriju caur MQTT
+          kanālu, uztur vienkāršotu digitālo dvīni un demonstrē sliekšņu
+          analītiku.
+        </p>
+      </div>
+
+      <div class="welcome-card">
+        <p>
+          Lai apskatītu reālā laika datus, pārvaldītu aktīvus un izveidotu
+          jaunus sensorus, lūdzu, pieslēdzieties:
+        </p>
+        <p>
+          <a class="btn btn--primary"
+             href="{% url 'accounts:login' %}">Pieslēgties operatoram</a>
+        </p>
+        <p class="welcome-card__hint">
+          Sistēmas administratori var pārvaldīt lietotājus
+          <a href="{% url 'admin:index' %}">Django administrācijā</a>.
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="page-footer">
+    <div class="page-container">
+      <p>
+        Datu avots ir tikai-lasīšanas
+        <a href="/api/" rel="noopener">REST API</a>; pieslēgtais operators
+        var arī izveidot aktīvus.
+      </p>
+    </div>
+  </footer>
+</body>
+</html>

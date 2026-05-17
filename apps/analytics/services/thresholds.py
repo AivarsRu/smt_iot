@@ -19,10 +19,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
-from django.db.models import Q
 from django.utils import timezone
 
-from apps.analytics.models import ThresholdRule
+from apps.analytics.models import ThresholdRule, ThresholdRuleScope
 from apps.events.models import Event, EventStatus, EventType
 
 logger = logging.getLogger(__name__)
@@ -133,17 +132,66 @@ def _extract_numeric_value(measurement) -> Optional[float]:
 
 def _applicable_rules(measurement):
     """
-    Active ThresholdRule rows whose scope (site/asset/device) is either
-    unset or matches the measurement.
+    Active ``ThresholdRule`` rows whose explicit ``scope_level`` matches the
+    measurement at exactly that level.
+
+    Phase 7 bugfix: previously a rule with a NULL ``sensor`` (or
+    ``device``/``asset``/``site``) was treated as a wildcard, meaning a rule
+    intended for one sensor would silently fire for every other sensor under
+    the same metric. The new semantics require each rule to declare the
+    scope at which it should be evaluated and bind exactly one FK at that
+    level.
+
+    Inference rules:
+
+      * ``scope_level == global``  → metric match is sufficient.
+      * ``scope_level == site``    → measurement.site must equal rule.site.
+      * ``scope_level == asset``   → measurement.asset must equal rule.asset.
+      * ``scope_level == device``  → measurement.device must equal rule.device.
+      * ``scope_level == sensor``  → measurement.sensor must equal rule.sensor.
     """
-    return ThresholdRule.objects.filter(
+    base = ThresholdRule.objects.filter(
         is_enabled=True,
         metric=measurement.metric,
-    ).filter(
-        Q(site__isnull=True) | Q(site=measurement.site),
-        Q(asset__isnull=True) | Q(asset=measurement.asset),
-        Q(device__isnull=True) | Q(device=measurement.device),
+    ).select_related("metric", "sensor", "device", "asset", "site")
+
+    # Build the union of per-scope querysets so that one DB call per scope
+    # remains both readable and trivially cacheable by Django. ``measurement``
+    # values are passed positionally to avoid kwarg/string typos.
+    applicable: list = []
+
+    applicable.extend(
+        base.filter(scope_level=ThresholdRuleScope.GLOBAL),
     )
+    if measurement.site_id:
+        applicable.extend(
+            base.filter(
+                scope_level=ThresholdRuleScope.SITE,
+                site_id=measurement.site_id,
+            ),
+        )
+    if measurement.asset_id:
+        applicable.extend(
+            base.filter(
+                scope_level=ThresholdRuleScope.ASSET,
+                asset_id=measurement.asset_id,
+            ),
+        )
+    if measurement.device_id:
+        applicable.extend(
+            base.filter(
+                scope_level=ThresholdRuleScope.DEVICE,
+                device_id=measurement.device_id,
+            ),
+        )
+    if measurement.sensor_id:
+        applicable.extend(
+            base.filter(
+                scope_level=ThresholdRuleScope.SENSOR,
+                sensor_id=measurement.sensor_id,
+            ),
+        )
+    return applicable
 
 
 # ── Bound check ───────────────────────────────────────────────────────────────
@@ -160,21 +208,24 @@ def _is_violation(value: float, rule) -> bool:
 
 def _find_open_event(rule, measurement):
     """
-    Locate an existing open threshold_anomaly event for the same rule, asset,
-    and metric. Used both for de-duplication and for closing on return-to-normal.
+    Locate an existing open threshold_anomaly event for the same rule and
+    the matching scope, used both for de-duplication and for closing on
+    return-to-normal.
+
+    ``payload__rule_code`` already uniquely identifies the rule; we add the
+    scope-specific FK filter (sensor for sensor-scoped rules, etc.) so that
+    a stale rule_code never accidentally collapses two distinct events from
+    different scopes into one.
     """
-    return (
-        Event.objects.filter(
-            event_type=EventType.THRESHOLD_ANOMALY,
-            status=EventStatus.OPEN,
-            source=ANALYTICS_SOURCE,
-            metric=measurement.metric,
-            asset=measurement.asset,
-            payload__rule_code=rule.code,
-        )
-        .order_by("-detected_at")
-        .first()
+    qs = Event.objects.filter(
+        event_type=EventType.THRESHOLD_ANOMALY,
+        status=EventStatus.OPEN,
+        source=ANALYTICS_SOURCE,
+        metric=measurement.metric,
+        payload__rule_code=rule.code,
     )
+    qs = _scope_filter(qs, rule, measurement)
+    return qs.order_by("-detected_at").first()
 
 
 def _create_threshold_event(rule, measurement, value: float):
@@ -213,7 +264,11 @@ def _update_open_event(event, rule, measurement, value: float) -> None:
 
 def _close_open_events(rule, measurement, value: float) -> int:
     """
-    Close any open threshold_anomaly events for the same rule/asset/metric.
+    Close any open threshold_anomaly events for the same rule and the
+    matching scope. A normal value reported by a *different* sensor must not
+    close another sensor's open event — that is what :func:`_scope_filter`
+    enforces here.
+
     Returns the number of events closed.
     """
     qs = Event.objects.filter(
@@ -221,9 +276,9 @@ def _close_open_events(rule, measurement, value: float) -> int:
         status=EventStatus.OPEN,
         source=ANALYTICS_SOURCE,
         metric=measurement.metric,
-        asset=measurement.asset,
         payload__rule_code=rule.code,
     )
+    qs = _scope_filter(qs, rule, measurement)
     now = timezone.now()
     closed_count = 0
     for event in qs:
@@ -271,7 +326,15 @@ def _describe(rule, measurement, value: float, *, normal: bool) -> str:
 def _build_payload(rule, measurement, value: float, *, prior_payload=None) -> dict:
     payload: dict = {
         "rule_code": rule.code,
+        "scope_level": rule.scope_level,
         "metric_key": getattr(measurement.metric, "key", None),
+        "sensor_code": getattr(measurement.sensor, "code", None),
+        "sensor_id": (
+            str(measurement.sensor_id) if measurement.sensor_id else None
+        ),
+        "device_uid": getattr(measurement.device, "device_uid", None),
+        "asset_code": getattr(measurement.asset, "code", None),
+        "site_code": getattr(measurement.site, "code", None),
         "value": value,
         "lower_bound": rule.lower_bound,
         "upper_bound": rule.upper_bound,
@@ -283,3 +346,43 @@ def _build_payload(rule, measurement, value: float, *, prior_payload=None) -> di
         merged.update(payload)
         return merged
     return payload
+
+
+def _scope_filter(qs, rule, measurement):
+    """
+    Narrow an Event queryset down to the rule's own scope so that
+    deduplication and closing only ever touch events that actually belong
+    to this (rule, scope) pair.
+
+    The match shape mirrors :func:`_applicable_rules`:
+
+      * global rules    → no extra constraint;
+      * site rules      → ``event.site == measurement.site``;
+      * asset rules     → ``event.asset == measurement.asset``;
+      * device rules    → ``event.device == measurement.device``;
+      * sensor rules    → ``event.sensor == measurement.sensor``.
+    """
+    scope = rule.scope_level
+    if scope == ThresholdRuleScope.GLOBAL:
+        # Per-measurement isolation: a "normal" reading from a different
+        # asset must not close another asset's open event, even for a
+        # global rule. We isolate on the strongest scope the measurement
+        # itself carries.
+        if measurement.sensor_id:
+            return qs.filter(sensor_id=measurement.sensor_id)
+        if measurement.device_id:
+            return qs.filter(device_id=measurement.device_id)
+        if measurement.asset_id:
+            return qs.filter(asset_id=measurement.asset_id)
+        if measurement.site_id:
+            return qs.filter(site_id=measurement.site_id)
+        return qs
+    if scope == ThresholdRuleScope.SITE:
+        return qs.filter(site_id=measurement.site_id)
+    if scope == ThresholdRuleScope.ASSET:
+        return qs.filter(asset_id=measurement.asset_id)
+    if scope == ThresholdRuleScope.DEVICE:
+        return qs.filter(device_id=measurement.device_id)
+    if scope == ThresholdRuleScope.SENSOR:
+        return qs.filter(sensor_id=measurement.sensor_id)
+    return qs

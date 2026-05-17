@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Asset, Device, Sensor, Site
+from .models import Asset, Device, Sensor, SensorMetric, Site
 
 
 @admin.register(Site)
@@ -39,6 +39,14 @@ class DeviceAdmin(admin.ModelAdmin):
     raw_id_fields = ("site", "asset")
 
 
+class SensorMetricInline(admin.TabularInline):
+    model = SensorMetric
+    extra = 0
+    fields = ("metric", "is_required", "sort_order", "is_active")
+    ordering = ("sort_order", "metric__key")
+    raw_id_fields = ("metric",)
+
+
 @admin.register(Sensor)
 class SensorAdmin(admin.ModelAdmin):
     list_display = ("code", "name", "device", "sensor_type", "is_active")
@@ -46,3 +54,17 @@ class SensorAdmin(admin.ModelAdmin):
     list_filter = ("sensor_type", "is_active")
     ordering = ("device", "code")
     raw_id_fields = ("device",)
+    inlines = [SensorMetricInline]
+
+
+@admin.register(SensorMetric)
+class SensorMetricAdmin(admin.ModelAdmin):
+    list_display = ("sensor", "metric", "is_required", "sort_order", "is_active")
+    search_fields = (
+        "sensor__device__device_uid",
+        "sensor__code",
+        "metric__key",
+    )
+    list_filter = ("is_required", "is_active")
+    ordering = ("sensor", "sort_order", "metric__key")
+    raw_id_fields = ("sensor", "metric")

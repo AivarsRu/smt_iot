@@ -6,6 +6,9 @@
 {% block content %}
   <p class="back-link">
     <a href="{% url 'dashboard:overview' %}" rel="noopener">← Atpakaļ uz pārskatu</a>
+    {% if configure_url %}
+      · <a href="{{ configure_url }}" data-role="configure-link">Konfigurēt aktīvu →</a>
+    {% endif %}
   </p>
 
   {# ── Page-level error (e.g. asset not found) ─────────────────────── #}

@@ -1,0 +1,74 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Izveidot ierīci — {{ asset.code }}{% endblock %}
+
+{% block header_meta %}{% endblock %}
+
+{% block content %}
+  <p class="back-link">
+    <a href="{% url 'dashboard:asset-configure' asset_code=asset.code %}" rel="noopener">← Atpakaļ uz konfigurāciju</a>
+  </p>
+
+  <section class="dashboard-section" aria-labelledby="device-create-heading">
+    <div class="section-header">
+      <h2 id="device-create-heading" class="section-header__title">
+        2. solis — izveidot jaunu ierīci aktīvam {{ asset.code }}
+      </h2>
+      <p class="section-header__hint">
+        <code>Device.device_uid</code> tiek ģenerēts automātiski (piem.,
+        <code>device-000001</code>). Ierīce tiks piesaistīta tam pašam
+        objektam kā aktīvs (<code>{{ asset.site.code }}</code>).
+      </p>
+    </div>
+
+    {% if has_errors %}
+      <div class="form-errors">Forma satur kļūdas. Lūdzu, izlabojiet zemāk izceltos laukus.</div>
+    {% endif %}
+
+    {% if form.non_field_errors %}
+      <div class="form-errors">{{ form.non_field_errors|join:" " }}</div>
+    {% endif %}
+
+    <form method="post" novalidate>
+      {% csrf_token %}
+
+      <fieldset class="form-section">
+        <legend class="form-section__title">Jauna ierīce</legend>
+        <div class="form-grid">
+          <div class="form-field">
+            <label for="{{ form.name.id_for_label }}">Nosaukums *</label>
+            {{ form.name }}
+            {% if form.name.errors %}<p class="form-field__error">{{ form.name.errors|join:" " }}</p>{% endif %}
+          </div>
+          <div class="form-field">
+            <label for="{{ form.device_type.id_for_label }}">Tips</label>
+            {{ form.device_type }}
+          </div>
+          <div class="form-field">
+            <label>
+              {{ form.is_simulated }} Simulēta ierīce
+            </label>
+          </div>
+          <div class="form-field">
+            <label for="{{ form.expected_interval_seconds.id_for_label }}">Sagaidāmais intervāls (s)</label>
+            {{ form.expected_interval_seconds }}
+          </div>
+          <div class="form-field">
+            <label for="{{ form.firmware_version.id_for_label }}">Firmware</label>
+            {{ form.firmware_version }}
+          </div>
+          <div class="form-field">
+            <label for="{{ form.status.id_for_label }}">Statuss</label>
+            {{ form.status }}
+          </div>
+        </div>
+      </fieldset>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary"
+                data-role="device-create-submit">Izveidot ierīci</button>
+        <a class="btn" href="{% url 'dashboard:asset-configure' asset_code=asset.code %}">Atcelt</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}

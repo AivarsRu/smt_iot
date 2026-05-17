@@ -1,0 +1,160 @@
+{% extends "dashboard/base.html" %}
+{% load static %}
+
+{% block title %}Rediģēt sliekšņa noteikumu — {{ rule.code }}{% endblock %}
+
+{% block header_meta %}{% endblock %}
+
+{% block content %}
+  <p class="back-link">
+    <a href="{% url 'dashboard:asset-configure' asset_code=asset.code %}" rel="noopener">← Atpakaļ uz konfigurāciju</a>
+  </p>
+
+  <section class="dashboard-section" aria-labelledby="rule-edit-heading">
+    <div class="section-header">
+      <h2 id="rule-edit-heading" class="section-header__title">
+        Rediģēt sliekšņa noteikumu
+      </h2>
+      <p class="section-header__hint">
+        <code>{{ rule.code }}</code> · metrika <code>{{ rule.metric.key }}</code> ·
+        pašreizējais tvērums <strong>{{ rule.get_scope_level_display }}</strong>.
+        Kods un metrika ir nemainīgi — lai mainītu metriku, izveidojiet
+        jaunu noteikumu Stage 4 formā.
+      </p>
+    </div>
+
+    {% if has_errors %}
+      <div class="form-errors">Forma satur kļūdas. Lūdzu, izlabojiet zemāk izceltos laukus.</div>
+    {% endif %}
+    {% if form.non_field_errors %}
+      <div class="form-errors">{{ form.non_field_errors|join:" " }}</div>
+    {% endif %}
+
+    <form method="post" novalidate data-stage-form data-role="rule-edit-form">
+      {% csrf_token %}
+
+      {# ── Identity ────────────────────────────────────────────── #}
+      <fieldset class="form-section">
+        <legend class="form-section__title">Identitāte</legend>
+        <div class="form-grid">
+          <div class="form-field form-field--full">
+            <label for="{{ form.name.id_for_label }}">Nosaukums *</label>
+            {{ form.name }}
+            {% if form.name.errors %}<p class="form-field__error">{{ form.name.errors|join:" " }}</p>{% endif %}
+          </div>
+          <div class="form-field form-field--full">
+            <label for="{{ form.description.id_for_label }}">Apraksts</label>
+            {{ form.description }}
+          </div>
+          <div class="form-field form-field--full">
+            <label for="{{ form.message_template.id_for_label }}">Notikuma teksta šablons</label>
+            {{ form.message_template }}
+          </div>
+        </div>
+      </fieldset>
+
+      {# ── Scope ──────────────────────────────────────────────── #}
+      <fieldset class="form-section">
+        <legend class="form-section__title">Tvērums</legend>
+        <p class="form-section__hint">
+          Tvērums nosaka, uz kuriem mērījumiem noteikums attiecas. Sensor-scope
+          ir drošākā izvēle; site-scope ietekmē visus aktīvus objektā.
+          Globālu tvērumu var iestatīt tikai administrators.
+        </p>
+        <div class="form-grid">
+          <div class="form-field form-field--full">
+            <label for="{{ form.scope_level.id_for_label }}">Tvēruma līmenis *</label>
+            {{ form.scope_level }}
+            {% if form.scope_level.errors %}<p class="form-field__error">{{ form.scope_level.errors|join:" " }}</p>{% endif %}
+          </div>
+
+          <div class="form-field form-field--full" data-show-when="scope_level" data-show-value="sensor">
+            <label for="{{ form.sensor.id_for_label }}">Sensors *</label>
+            {{ form.sensor }}
+            {% if form.sensor.errors %}<p class="form-field__error">{{ form.sensor.errors|join:" " }}</p>{% endif %}
+            <p class="form-field__hint">
+              Sensoru saraksts ietver tikai šī aktīva ierīču sensorus.
+            </p>
+          </div>
+
+          <div class="form-field form-field--full" data-show-when="scope_level" data-show-value="device">
+            <label for="{{ form.device.id_for_label }}">Ierīce *</label>
+            {{ form.device }}
+            {% if form.device.errors %}<p class="form-field__error">{{ form.device.errors|join:" " }}</p>{% endif %}
+            <p class="form-field__hint">
+              Noteikums tiks piemērots visiem ierīces sensoriem, kas ražo
+              <code>{{ rule.metric.key }}</code>.
+            </p>
+          </div>
+
+          <div class="form-field form-field--full" data-show-when="scope_level" data-show-value="asset">
+            <p class="form-field__hint">
+              Asset-scope: noteikums tiks piemērots aktīvam
+              <code>{{ asset.code }}</code> — visām tā ierīcēm un sensoriem,
+              kas ražo <code>{{ rule.metric.key }}</code>.
+            </p>
+          </div>
+
+          <div class="form-field form-field--full" data-show-when="scope_level" data-show-value="site">
+            <p class="form-field__hint state state--warning">
+              ⚠ Site-scope: noteikums tiks piemērots <strong>visiem aktīviem
+              objektā <code>{{ asset.site.code }}</code></strong>, ne tikai
+              šim aktīvam. Lūdzu, pārliecinieties, ka tas ir tas, ko vēlaties.
+            </p>
+          </div>
+        </div>
+      </fieldset>
+
+      {# ── Bounds & behaviour ────────────────────────────────── #}
+      <fieldset class="form-section">
+        <legend class="form-section__title">Robežas un uzvedība</legend>
+        <div class="form-grid">
+          <div class="form-field">
+            <label for="{{ form.lower_bound.id_for_label }}">Lower bound</label>
+            {{ form.lower_bound }}
+            {% if form.lower_bound.errors %}<p class="form-field__error">{{ form.lower_bound.errors|join:" " }}</p>{% endif %}
+          </div>
+          <div class="form-field">
+            <label for="{{ form.upper_bound.id_for_label }}">Upper bound</label>
+            {{ form.upper_bound }}
+            {% if form.upper_bound.errors %}<p class="form-field__error">{{ form.upper_bound.errors|join:" " }}</p>{% endif %}
+          </div>
+          <div class="form-field">
+            <label for="{{ form.severity.id_for_label }}">Severity</label>
+            {{ form.severity }}
+          </div>
+          <div class="form-field">
+            <label for="{{ form.sort_order.id_for_label }}">Sort order</label>
+            {{ form.sort_order }}
+          </div>
+          <div class="form-field">
+            <label>
+              {{ form.close_when_normal }} Aizvērt, kad atgriežas normā
+            </label>
+          </div>
+          <div class="form-field form-field--full">
+            <label>
+              {{ form.is_enabled }} Aktīvs
+            </label>
+            <p class="form-field__hint">
+              Noteikuma deaktivēšana automātiski aizver visus tā atvērtos
+              <code>threshold_anomaly</code> notikumus
+              (<code>closed_reason=rule_disabled</code>). Šī ir vienīgā
+              vieta dashboard-ā, kur var deaktivēt noteikumu, neizmantojot
+              Django administrāciju.
+            </p>
+          </div>
+        </div>
+      </fieldset>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary" data-role="rule-edit-submit">Saglabāt</button>
+        <a class="btn" href="{% url 'dashboard:asset-configure' asset_code=asset.code %}">Atcelt</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}
+
+{% block extra_scripts %}
+  <script src="{% static 'dashboard/asset_create.js' %}" defer></script>
+{% endblock %}

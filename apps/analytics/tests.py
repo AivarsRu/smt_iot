@@ -14,13 +14,13 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
-from apps.analytics.models import ThresholdRule
+from apps.analytics.models import ThresholdRule, ThresholdRuleScope
 from apps.analytics.services.thresholds import (
     ANALYTICS_SOURCE,
     evaluate_measurement_thresholds,
     evaluate_measurements_thresholds,
 )
-from apps.assets.models import Asset, AssetType, Device, Sensor, Site
+from apps.assets.models import Asset, AssetType, Device, Sensor, SensorMetric, Site
 from apps.core.models import DataType
 from apps.events.models import Event, EventStatus, EventType, Severity
 from apps.iot_config.models import MetricDefinition
@@ -106,6 +106,18 @@ def _make_measurement(
 
 
 def _make_rule(metric, *, code="t_high", upper=None, lower=None, **kwargs):
+    """
+    Convenience builder for tests.
+
+    If the caller does not pass ``scope_level`` explicitly we infer it from
+    the strongest FK provided (sensor > device > asset > site > global) so
+    pre-Phase-7 tests keep working with the same semantics they expected:
+    a rule with no FKs behaves as a global rule.
+
+    For sensor-scoped rules we also auto-create the supporting
+    ``SensorMetric`` capability row if one is not already present, so the
+    new validation in ``ThresholdRule.clean`` doesn't reject the fixture.
+    """
     rule_kwargs = {
         "code": code,
         "name": code,
@@ -117,6 +129,27 @@ def _make_rule(metric, *, code="t_high", upper=None, lower=None, **kwargs):
         "close_when_normal": True,
     }
     rule_kwargs.update(kwargs)
+
+    if "scope_level" not in rule_kwargs:
+        if rule_kwargs.get("sensor"):
+            rule_kwargs["scope_level"] = ThresholdRuleScope.SENSOR
+        elif rule_kwargs.get("device"):
+            rule_kwargs["scope_level"] = ThresholdRuleScope.DEVICE
+        elif rule_kwargs.get("asset"):
+            rule_kwargs["scope_level"] = ThresholdRuleScope.ASSET
+        elif rule_kwargs.get("site"):
+            rule_kwargs["scope_level"] = ThresholdRuleScope.SITE
+        else:
+            rule_kwargs["scope_level"] = ThresholdRuleScope.GLOBAL
+
+    if rule_kwargs["scope_level"] == ThresholdRuleScope.SENSOR:
+        sensor = rule_kwargs.get("sensor")
+        if sensor is not None:
+            SensorMetric.objects.get_or_create(
+                sensor=sensor, metric=metric,
+                defaults={"is_required": False, "sort_order": 0},
+            )
+
     return ThresholdRule.objects.create(**rule_kwargs)
 
 
@@ -168,6 +201,358 @@ class ThresholdRuleModelTest(TestCase):
         _make_rule(self.metric, code="dup", upper=60.0)
         with self.assertRaises(Exception):
             _make_rule(self.metric, code="dup", upper=70.0)
+
+
+# ── Model: explicit scope_level validation (Phase 7 bugfix) ─────────────────
+
+class ThresholdRuleScopeValidationTest(TestCase):
+    """
+    Pin the per-scope validation rules added in
+    :class:`apps.analytics.models.ThresholdRule.clean`.
+    """
+
+    def setUp(self):
+        self.site = _make_site()
+        self.other_site = _make_site(code="other_site")
+        self.asset = _make_asset(self.site)
+        self.other_asset = _make_asset(self.other_site, code="charger-002")
+        self.device = _make_device(self.site, self.asset)
+        self.other_device = _make_device(self.other_site, self.other_asset, uid="charger-002")
+        self.sensor = _make_sensor(self.device)
+        self.other_sensor = _make_sensor(self.other_device, code="other")
+        self.metric = _make_metric()
+        SensorMetric.objects.create(sensor=self.sensor, metric=self.metric)
+        SensorMetric.objects.create(sensor=self.other_sensor, metric=self.metric)
+
+    # ── Global ──────────────────────────────────────────────────────────
+
+    def test_global_rule_allows_no_scope_fk(self):
+        rule = ThresholdRule.objects.create(
+            code="g", name="g", metric=self.metric,
+            scope_level=ThresholdRuleScope.GLOBAL, upper_bound=60.0,
+        )
+        self.assertEqual(rule.scope_level, ThresholdRuleScope.GLOBAL)
+        self.assertIsNone(rule.site_id)
+        self.assertIsNone(rule.asset_id)
+        self.assertIsNone(rule.device_id)
+        self.assertIsNone(rule.sensor_id)
+
+    def test_global_rule_rejects_populated_scope_fk(self):
+        with self.assertRaises(ValidationError):
+            ThresholdRule.objects.create(
+                code="g2", name="g2", metric=self.metric,
+                scope_level=ThresholdRuleScope.GLOBAL,
+                upper_bound=60.0,
+                sensor=self.sensor,
+            )
+
+    # ── Site ────────────────────────────────────────────────────────────
+
+    def test_site_rule_requires_site(self):
+        with self.assertRaises(ValidationError):
+            ThresholdRule.objects.create(
+                code="s1", name="s1", metric=self.metric,
+                scope_level=ThresholdRuleScope.SITE, upper_bound=60.0,
+            )
+
+    def test_site_rule_rejects_finer_scope_fks(self):
+        with self.assertRaises(ValidationError):
+            ThresholdRule.objects.create(
+                code="s2", name="s2", metric=self.metric,
+                scope_level=ThresholdRuleScope.SITE, upper_bound=60.0,
+                site=self.site, sensor=self.sensor,
+            )
+
+    # ── Asset ───────────────────────────────────────────────────────────
+
+    def test_asset_rule_requires_asset(self):
+        with self.assertRaises(ValidationError):
+            ThresholdRule.objects.create(
+                code="a1", name="a1", metric=self.metric,
+                scope_level=ThresholdRuleScope.ASSET, upper_bound=60.0,
+            )
+
+    def test_asset_rule_rejects_mismatched_site(self):
+        with self.assertRaises(ValidationError):
+            ThresholdRule.objects.create(
+                code="a2", name="a2", metric=self.metric,
+                scope_level=ThresholdRuleScope.ASSET, upper_bound=60.0,
+                asset=self.asset, site=self.other_site,
+            )
+
+    def test_asset_rule_auto_fills_site(self):
+        rule = ThresholdRule.objects.create(
+            code="a3", name="a3", metric=self.metric,
+            scope_level=ThresholdRuleScope.ASSET, upper_bound=60.0,
+            asset=self.asset,
+        )
+        self.assertEqual(rule.site, self.site)
+
+    # ── Device ──────────────────────────────────────────────────────────
+
+    def test_device_rule_requires_device(self):
+        with self.assertRaises(ValidationError):
+            ThresholdRule.objects.create(
+                code="d1", name="d1", metric=self.metric,
+                scope_level=ThresholdRuleScope.DEVICE, upper_bound=60.0,
+            )
+
+    def test_device_rule_rejects_sensor(self):
+        with self.assertRaises(ValidationError):
+            ThresholdRule.objects.create(
+                code="d2", name="d2", metric=self.metric,
+                scope_level=ThresholdRuleScope.DEVICE, upper_bound=60.0,
+                device=self.device, sensor=self.sensor,
+            )
+
+    def test_device_rule_auto_fills_asset_and_site(self):
+        rule = ThresholdRule.objects.create(
+            code="d3", name="d3", metric=self.metric,
+            scope_level=ThresholdRuleScope.DEVICE, upper_bound=60.0,
+            device=self.device,
+        )
+        self.assertEqual(rule.asset, self.asset)
+        self.assertEqual(rule.site, self.site)
+
+    # ── Sensor ──────────────────────────────────────────────────────────
+
+    def test_sensor_rule_requires_sensor(self):
+        with self.assertRaises(ValidationError):
+            ThresholdRule.objects.create(
+                code="ss1", name="ss1", metric=self.metric,
+                scope_level=ThresholdRuleScope.SENSOR, upper_bound=60.0,
+            )
+
+    def test_sensor_rule_auto_fills_device_asset_site(self):
+        rule = ThresholdRule.objects.create(
+            code="ss2", name="ss2", metric=self.metric,
+            scope_level=ThresholdRuleScope.SENSOR, upper_bound=60.0,
+            sensor=self.sensor,
+        )
+        self.assertEqual(rule.device, self.device)
+        self.assertEqual(rule.asset, self.asset)
+        self.assertEqual(rule.site, self.site)
+
+    def test_sensor_rule_rejects_mismatched_device(self):
+        with self.assertRaises(ValidationError):
+            ThresholdRule.objects.create(
+                code="ss3", name="ss3", metric=self.metric,
+                scope_level=ThresholdRuleScope.SENSOR, upper_bound=60.0,
+                sensor=self.sensor, device=self.other_device,
+            )
+
+    def test_sensor_rule_requires_sensor_metric_mapping(self):
+        # A sensor that does not produce ``metric`` cannot have a rule
+        # for that metric — surface the misconfiguration at validation.
+        rogue_metric = _make_metric(key="rogue_metric")
+        with self.assertRaises(ValidationError):
+            ThresholdRule.objects.create(
+                code="ss4", name="ss4", metric=rogue_metric,
+                scope_level=ThresholdRuleScope.SENSOR, upper_bound=60.0,
+                sensor=self.sensor,
+            )
+
+
+# ── Auto-close on rule disable (Phase 7 follow-up) ──────────────────────────
+
+class ThresholdRuleAutoCloseOnDisableTest(TestCase):
+    """
+    Disabling a ``ThresholdRule`` (``is_enabled = False``) must close
+    every still-open ``threshold_anomaly`` event that the rule produced.
+
+    Why this matters: once the rule is disabled the analytics service
+    skips it entirely (``_applicable_rules`` filters by ``is_enabled``),
+    so a later return-to-normal measurement can no longer reach the
+    close path. Without this hook the rule's open events would sit on
+    the dashboard forever — which is exactly the orphan we saw in
+    production for the stray ``rule-000001``.
+    """
+
+    def setUp(self):
+        self.site = _make_site()
+        self.asset = _make_asset(self.site)
+        self.device = _make_device(self.site, self.asset)
+        self.sensor = _make_sensor(self.device)
+        self.metric_temp = _make_metric(key="temperature_c")
+        self.rm = _make_raw_message(self.site, self.asset, self.device)
+        SensorMetric.objects.get_or_create(
+            sensor=self.sensor, metric=self.metric_temp,
+        )
+
+    def _open_event_for(self, rule, value):
+        # Drive a real measurement through ``evaluate_measurement_thresholds``
+        # so the open event we create is shape-identical to what the
+        # analytics service produces in production.
+        rm = _make_raw_message(
+            self.site, self.asset, self.device,
+            message_id=f"rm-{rule.code}-{value}",
+        )
+        m = _make_measurement(
+            site=self.site, asset=self.asset, device=self.device,
+            sensor=self.sensor, metric=self.metric_temp,
+            raw_message=rm, value_float=value,
+        )
+        evaluate_measurement_thresholds(m)
+        return Event.objects.get(
+            event_type=EventType.THRESHOLD_ANOMALY,
+            payload__rule_code=rule.code,
+        )
+
+    # ── Happy path ────────────────────────────────────────────────────────
+
+    def test_disabling_rule_closes_its_open_event(self):
+        rule = _make_rule(self.metric_temp, code="auto1", upper=60.0)
+        event = self._open_event_for(rule, 80.0)
+        self.assertEqual(event.status, EventStatus.OPEN)
+
+        rule.is_enabled = False
+        rule.save()
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, EventStatus.CLOSED)
+        self.assertIsNotNone(event.closed_at)
+        self.assertEqual(event.payload.get("closed_reason"), "rule_disabled")
+        self.assertIn("closed_at", event.payload)
+
+    def test_disabling_rule_with_multiple_open_events_closes_all(self):
+        # A global rule can have one open event per sensor; disabling
+        # the rule must close every one of them in a single save.
+        from apps.analytics.models import ThresholdRuleScope
+        rule = _make_rule(
+            self.metric_temp, code="auto_multi",
+            upper=60.0, scope_level=ThresholdRuleScope.GLOBAL,
+        )
+        other_sensor = _make_sensor(self.device, code="aux")
+        SensorMetric.objects.create(
+            sensor=other_sensor, metric=self.metric_temp,
+        )
+        self._open_event_for(rule, 80.0)
+        # Open a second event from a different sensor under the same
+        # global rule by passing ``sensor`` explicitly.
+        rm = _make_raw_message(
+            self.site, self.asset, self.device, message_id="rm-aux-80",
+        )
+        m = _make_measurement(
+            site=self.site, asset=self.asset, device=self.device,
+            sensor=other_sensor, metric=self.metric_temp,
+            raw_message=rm, value_float=80.0,
+        )
+        evaluate_measurement_thresholds(m)
+        self.assertEqual(
+            Event.objects.filter(
+                payload__rule_code=rule.code, status=EventStatus.OPEN,
+            ).count(), 2,
+        )
+
+        rule.is_enabled = False
+        rule.save()
+
+        self.assertEqual(
+            Event.objects.filter(
+                payload__rule_code=rule.code, status=EventStatus.OPEN,
+            ).count(), 0,
+        )
+
+    # ── Isolation guarantees ─────────────────────────────────────────────
+
+    def test_disabling_rule_does_not_close_other_rules_events(self):
+        rule_a = _make_rule(self.metric_temp, code="auto_a", upper=60.0)
+        rule_b = _make_rule(self.metric_temp, code="auto_b", upper=70.0)
+        event_a = self._open_event_for(rule_a, 80.0)
+        event_b = Event.objects.get(payload__rule_code="auto_b")
+
+        rule_a.is_enabled = False
+        rule_a.save()
+
+        event_a.refresh_from_db()
+        event_b.refresh_from_db()
+        self.assertEqual(event_a.status, EventStatus.CLOSED)
+        self.assertEqual(
+            event_b.status, EventStatus.OPEN,
+            msg="Disabling rule_a must not close rule_b's open event.",
+        )
+
+    def test_already_closed_events_are_not_touched(self):
+        # The hook should be safe to re-run: events that are already
+        # CLOSED must keep their original closed_at and not get a new
+        # ``closed_reason='rule_disabled'`` tag.
+        rule = _make_rule(self.metric_temp, code="auto_idem", upper=60.0)
+        event = self._open_event_for(rule, 80.0)
+        # First disable closes it.
+        rule.is_enabled = False
+        rule.save()
+        event.refresh_from_db()
+        first_closed_at = event.closed_at
+        original_reason = event.payload.get("closed_reason")
+
+        # Re-fetch and disable again (no-op transition).
+        rule = ThresholdRule.objects.get(pk=rule.pk)
+        rule.save()  # still disabled, no transition
+
+        event.refresh_from_db()
+        self.assertEqual(event.closed_at, first_closed_at)
+        self.assertEqual(event.payload.get("closed_reason"), original_reason)
+
+    # ── Non-transitions are no-ops ───────────────────────────────────────
+
+    def test_creating_a_disabled_rule_is_a_noop_for_close_logic(self):
+        # A brand-new rule has no events to close. ``_state.adding``
+        # guards us against accidentally running the hook on the very
+        # first save.
+        rule = _make_rule(
+            self.metric_temp, code="auto_new_disabled",
+            upper=60.0, is_enabled=False,
+        )
+        self.assertFalse(rule.is_enabled)
+        # No exceptions, no events of this rule's code exist.
+        self.assertEqual(
+            Event.objects.filter(payload__rule_code=rule.code).count(), 0,
+        )
+
+    def test_updating_other_field_does_not_close_open_events(self):
+        rule = _make_rule(self.metric_temp, code="auto_keep", upper=60.0)
+        event = self._open_event_for(rule, 80.0)
+        # Touch an unrelated field while keeping is_enabled True.
+        rule.name = "renamed"
+        rule.save()
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, EventStatus.OPEN)
+
+    def test_reenabling_rule_does_not_reopen_closed_events(self):
+        # Once an event is CLOSED (either by return-to-normal or by a
+        # disable transition) it stays CLOSED. The next violation
+        # creates a fresh event — that's what the analytics service
+        # tests already pin elsewhere.
+        rule = _make_rule(self.metric_temp, code="auto_toggle", upper=60.0)
+        event = self._open_event_for(rule, 80.0)
+        rule.is_enabled = False
+        rule.save()
+        event.refresh_from_db()
+        self.assertEqual(event.status, EventStatus.CLOSED)
+        closed_at_snapshot = event.closed_at
+
+        rule.is_enabled = True
+        rule.save()
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, EventStatus.CLOSED)
+        self.assertEqual(event.closed_at, closed_at_snapshot)
+
+    # ── Direct API helper (covers the "manual" disable path) ────────────
+
+    def test_helper_returns_count_of_closed_events(self):
+        rule = _make_rule(self.metric_temp, code="auto_count", upper=60.0)
+        self._open_event_for(rule, 80.0)
+        # Calling the helper directly without flipping is_enabled should
+        # still close events (the helper is the underlying primitive;
+        # ``save()`` is the public-facing trigger).
+        self.assertEqual(rule._close_open_events_on_disable(), 1)
+        self.assertEqual(
+            Event.objects.filter(
+                payload__rule_code=rule.code, status=EventStatus.OPEN,
+            ).count(), 0,
+        )
 
 
 # ── Service tests: rule applicability filtering ──────────────────────────────
@@ -234,12 +619,225 @@ class ThresholdServiceApplicabilityTest(TestCase):
         m_match = self._make_measurement_for(self.site, self.asset, self.device)
         self.assertEqual(evaluate_measurement_thresholds(m_match).events_created, 1)
 
+    def test_sensor_specific_rule_only_applies_to_matching_sensor(self):
+        sensor_main = _make_sensor(self.device, code="main")
+        sensor_aux = _make_sensor(self.device, code="aux")
+        _make_rule(self.metric, code="sens-main", upper=60.0, sensor=sensor_main)
+
+        # Measurement from aux sensor — sensor-scoped rule must not apply.
+        rm_aux = self._next_raw_message(self.site, self.asset, self.device)
+        m_aux = _make_measurement(
+            site=self.site, asset=self.asset, device=self.device,
+            sensor=sensor_aux, metric=self.metric, raw_message=rm_aux,
+            value_float=99.0,
+        )
+        self.assertEqual(evaluate_measurement_thresholds(m_aux).rules_checked, 0)
+
+        # Measurement from the matching sensor — rule fires.
+        rm_main = self._next_raw_message(self.site, self.asset, self.device)
+        m_main = _make_measurement(
+            site=self.site, asset=self.asset, device=self.device,
+            sensor=sensor_main, metric=self.metric, raw_message=rm_main,
+            value_float=99.0,
+        )
+        result = evaluate_measurement_thresholds(m_main)
+        self.assertEqual(result.rules_checked, 1)
+        self.assertEqual(result.events_created, 1)
+
+    def test_sensor_scoped_event_records_sensor(self):
+        sensor = _make_sensor(self.device, code="main")
+        _make_rule(self.metric, code="sens", upper=60.0, sensor=sensor)
+        rm = self._next_raw_message(self.site, self.asset, self.device)
+        m = _make_measurement(
+            site=self.site, asset=self.asset, device=self.device,
+            sensor=sensor, metric=self.metric, raw_message=rm, value_float=99.0,
+        )
+        result = evaluate_measurement_thresholds(m)
+        self.assertEqual(result.events_created, 1)
+        event = Event.objects.filter(metric=self.metric).order_by("-detected_at").first()
+        self.assertIsNotNone(event)
+        self.assertEqual(event.sensor, sensor)
+
     def test_disabled_rule_is_not_evaluated(self):
         _make_rule(self.metric, code="off", upper=60.0, is_enabled=False)
         m = self._make_measurement_for(self.site, self.asset, self.device)
         result = evaluate_measurement_thresholds(m)
         self.assertEqual(result.rules_checked, 0)
         self.assertEqual(result.events_created, 0)
+
+
+# ── Service tests: cross-sensor isolation (Phase 7 bugfix) ──────────────────
+
+class ThresholdServiceCrossSensorIsolationTest(TestCase):
+    """
+    Pin the bug observed in production: one ``Measurement`` from
+    sensor *A* must never trigger or close a threshold event that was
+    created for sensor *B* — even when both sensors share the same
+    metric and live under the same device/asset.
+
+    Real-world scenario: an outdoor temperature sensor (-40..40 °C) and a
+    motor temperature sensor (0..100 °C) on the same charger device. The
+    outdoor rule must not fire when the motor reaches 80 °C.
+    """
+
+    def setUp(self):
+        self.site = _make_site()
+        self.asset = _make_asset(self.site)
+        self.device = _make_device(self.site, self.asset)
+        self.sensor_outdoor = _make_sensor(self.device, code="outdoor")
+        self.sensor_motor = _make_sensor(self.device, code="motor")
+        self.metric = _make_metric()
+        SensorMetric.objects.create(sensor=self.sensor_outdoor, metric=self.metric)
+        SensorMetric.objects.create(sensor=self.sensor_motor, metric=self.metric)
+        # Sensor-scoped rule: outdoor only, "-40..40 °C is normal".
+        _make_rule(
+            self.metric, code="outdoor_temp_range",
+            lower=-40.0, upper=40.0, sensor=self.sensor_outdoor,
+        )
+        self._rm_counter = 0
+
+    def _meas(self, sensor, value):
+        self._rm_counter += 1
+        rm = _make_raw_message(
+            self.site, self.asset, self.device,
+            message_id=f"rm-{self._rm_counter}",
+        )
+        return _make_measurement(
+            site=self.site, asset=self.asset, device=self.device,
+            sensor=sensor, metric=self.metric, raw_message=rm,
+            value_float=value,
+        )
+
+    def test_outdoor_rule_does_not_fire_for_motor_sensor(self):
+        # Motor sensor reports 80 °C — outdoor rule must stay silent.
+        result = evaluate_measurement_thresholds(
+            self._meas(self.sensor_motor, 80.0),
+        )
+        self.assertEqual(result.rules_checked, 0)
+        self.assertEqual(result.events_created, 0)
+        self.assertEqual(Event.objects.count(), 0)
+
+    def test_outdoor_rule_fires_only_for_outdoor_sensor(self):
+        result = evaluate_measurement_thresholds(
+            self._meas(self.sensor_outdoor, 75.0),
+        )
+        self.assertEqual(result.events_created, 1)
+        ev = Event.objects.get()
+        self.assertEqual(ev.sensor, self.sensor_outdoor)
+        self.assertEqual(ev.payload["sensor_code"], "outdoor")
+        self.assertEqual(ev.payload["scope_level"], "sensor")
+
+    def test_motor_normal_value_does_not_close_outdoor_open_event(self):
+        # 1. Outdoor sensor goes into violation.
+        evaluate_measurement_thresholds(
+            self._meas(self.sensor_outdoor, 75.0),
+        )
+        outdoor_event = Event.objects.get(status=EventStatus.OPEN)
+
+        # 2. Motor sensor reports a perfectly normal value within the
+        #    outdoor bounds. Under the old NULL-wildcard semantics this
+        #    would mistakenly close the outdoor event; under explicit
+        #    scope it must not.
+        result = evaluate_measurement_thresholds(
+            self._meas(self.sensor_motor, 25.0),
+        )
+        self.assertEqual(result.events_closed, 0)
+        outdoor_event.refresh_from_db()
+        self.assertEqual(outdoor_event.status, EventStatus.OPEN)
+
+    def test_outdoor_returning_to_normal_only_closes_outdoor_event(self):
+        # Both sensors go above the outdoor rule's upper bound; only
+        # outdoor opens an event. Outdoor then returns to normal.
+        evaluate_measurement_thresholds(self._meas(self.sensor_outdoor, 75.0))
+        evaluate_measurement_thresholds(self._meas(self.sensor_motor, 80.0))  # no event
+        self.assertEqual(Event.objects.count(), 1)
+
+        evaluate_measurement_thresholds(self._meas(self.sensor_outdoor, 25.0))
+        ev = Event.objects.get()
+        self.assertEqual(ev.status, EventStatus.CLOSED)
+
+    def test_two_sensor_scoped_rules_create_separate_events(self):
+        # Add a sensor-scoped rule for the motor sensor too. A high
+        # reading on each sensor must create two independent events.
+        _make_rule(
+            self.metric, code="motor_temp_range",
+            lower=0.0, upper=100.0, sensor=self.sensor_motor,
+        )
+        evaluate_measurement_thresholds(self._meas(self.sensor_outdoor, 60.0))
+        evaluate_measurement_thresholds(self._meas(self.sensor_motor, 120.0))
+        events = Event.objects.order_by("payload__rule_code")
+        self.assertEqual(events.count(), 2)
+        self.assertEqual(
+            {e.payload["rule_code"] for e in events},
+            {"motor_temp_range", "outdoor_temp_range"},
+        )
+        self.assertEqual(
+            {e.payload["sensor_code"] for e in events},
+            {"motor", "outdoor"},
+        )
+
+
+class ThresholdServiceGlobalRuleIsolationTest(TestCase):
+    """
+    A global rule applies to any measurement with the matching metric,
+    but the **events** it produces must still be isolated per-sensor (and
+    per-asset where sensor is missing). One asset coming back to normal
+    must not close another asset's open event.
+    """
+
+    def setUp(self):
+        self.site = _make_site()
+        self.asset_a = _make_asset(self.site, code="asset-A")
+        self.asset_b = _make_asset(self.site, code="asset-B")
+        self.device_a = _make_device(self.site, self.asset_a, uid="dev-A")
+        self.device_b = _make_device(self.site, self.asset_b, uid="dev-B")
+        self.sensor_a = _make_sensor(self.device_a, code="a-main")
+        self.sensor_b = _make_sensor(self.device_b, code="b-main")
+        self.metric = _make_metric()
+        # Truly global rule — no scope FKs.
+        _make_rule(
+            self.metric, code="global_temp_max",
+            upper=60.0, scope_level=ThresholdRuleScope.GLOBAL,
+        )
+        self._rm = 0
+
+    def _meas(self, sensor, asset, device, value):
+        self._rm += 1
+        rm = _make_raw_message(self.site, asset, device, message_id=f"g-{self._rm}")
+        return _make_measurement(
+            site=self.site, asset=asset, device=device,
+            sensor=sensor, metric=self.metric, raw_message=rm,
+            value_float=value,
+        )
+
+    def test_global_rule_creates_separate_event_per_sensor(self):
+        evaluate_measurement_thresholds(
+            self._meas(self.sensor_a, self.asset_a, self.device_a, 75.0),
+        )
+        evaluate_measurement_thresholds(
+            self._meas(self.sensor_b, self.asset_b, self.device_b, 80.0),
+        )
+        events = Event.objects.filter(status=EventStatus.OPEN)
+        self.assertEqual(events.count(), 2)
+        self.assertEqual(
+            {e.sensor.code for e in events}, {"a-main", "b-main"},
+        )
+
+    def test_global_rule_close_only_affects_matching_sensor(self):
+        evaluate_measurement_thresholds(
+            self._meas(self.sensor_a, self.asset_a, self.device_a, 75.0),
+        )
+        evaluate_measurement_thresholds(
+            self._meas(self.sensor_b, self.asset_b, self.device_b, 80.0),
+        )
+        # Sensor A returns to normal — only A's event should close.
+        evaluate_measurement_thresholds(
+            self._meas(self.sensor_a, self.asset_a, self.device_a, 30.0),
+        )
+        a_event = Event.objects.get(sensor=self.sensor_a)
+        b_event = Event.objects.get(sensor=self.sensor_b)
+        self.assertEqual(a_event.status, EventStatus.CLOSED)
+        self.assertEqual(b_event.status, EventStatus.OPEN)
 
 
 # ── Service tests: violation, normal, dedup, close ───────────────────────────
@@ -452,17 +1050,28 @@ class ThresholdServiceEvaluationTest(TestCase):
         _make_rule(self.metric_temp, code="t_high", upper=60.0, lower=10.0)
         m = _make_measurement(
             site=self.site, asset=self.asset, device=self.device,
+            sensor=self.sensor,
             metric=self.metric_temp, raw_message=self.rm, value_float=99.0,
         )
         evaluate_measurement_thresholds(m)
         ev = Event.objects.get(event_type=EventType.THRESHOLD_ANOMALY)
+        # Phase 7 bugfix added scope_level + sensor_code + device_uid +
+        # asset_code + site_code so downstream consumers can audit which
+        # exact scope produced the event without re-joining tables.
         for field in (
-            "rule_code", "metric_key", "value", "lower_bound",
-            "upper_bound", "measurement_id",
+            "rule_code", "scope_level", "metric_key",
+            "sensor_code", "sensor_id", "device_uid",
+            "asset_code", "site_code",
+            "value", "lower_bound", "upper_bound", "measurement_id",
         ):
-            self.assertIn(field, ev.payload)
+            self.assertIn(field, ev.payload, msg=field)
         self.assertEqual(ev.payload["rule_code"], "t_high")
+        self.assertEqual(ev.payload["scope_level"], "global")
         self.assertEqual(ev.payload["metric_key"], "temperature_c")
+        self.assertEqual(ev.payload["sensor_code"], "main")
+        self.assertEqual(ev.payload["device_uid"], "charger-001")
+        self.assertEqual(ev.payload["asset_code"], "charger-001")
+        self.assertEqual(ev.payload["site_code"], "default_demo")
         self.assertEqual(ev.payload["value"], 99.0)
         self.assertEqual(ev.payload["upper_bound"], 60.0)
         self.assertEqual(ev.payload["lower_bound"], 10.0)
@@ -517,6 +1126,40 @@ class SeedDemoDataThresholdRuleTest(TestCase):
         self.assertEqual(
             ThresholdRule.objects.filter(code__startswith="temperature_c_high").count(),
             2,
+        )
+
+    def test_seed_demo_temperature_rules_are_sensor_scoped(self):
+        # Phase 7 bugfix: the seed used to ship NULL-FK "global" rules that
+        # accidentally fired on every other sensor sharing the metric.
+        call_command("seed_demo_data", verbosity=0)
+        for code in (
+            "temperature_c_high_warning",
+            "temperature_c_high_error",
+            "battery_soc_low_warning",
+        ):
+            rule = ThresholdRule.objects.get(code=code)
+            self.assertEqual(
+                rule.scope_level, ThresholdRuleScope.SENSOR,
+                msg=f"{code} should be sensor-scoped",
+            )
+            self.assertIsNotNone(rule.sensor_id, msg=code)
+            self.assertIsNotNone(rule.device_id, msg=code)
+            self.assertIsNotNone(rule.asset_id, msg=code)
+            self.assertIsNotNone(rule.site_id, msg=code)
+
+    def test_seed_does_not_create_unintended_global_temperature_rules(self):
+        call_command("seed_demo_data", verbosity=0)
+        global_temp_rules = ThresholdRule.objects.filter(
+            metric__key="temperature_c",
+            scope_level=ThresholdRuleScope.GLOBAL,
+        )
+        self.assertEqual(
+            list(global_temp_rules.values_list("code", flat=True)),
+            [],
+            msg=(
+                "Demo seed must not ship temperature_c rules at global scope; "
+                "use scope_level=sensor."
+            ),
         )
 
 

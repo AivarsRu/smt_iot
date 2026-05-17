@@ -1,8 +1,9 @@
 from django.db import IntegrityError
 from django.test import TestCase
 
-from apps.assets.models import Asset, AssetType, Device, Sensor, Site
+from apps.assets.models import Asset, AssetType, Device, Sensor, SensorMetric, Site
 from apps.core.models import OperationalStatus
+from apps.iot_config.models import MetricDefinition
 
 
 class SiteModelTest(TestCase):
@@ -94,3 +95,51 @@ class SensorModelTest(TestCase):
         Sensor.objects.create(device=self.device, code="shared", name="Sensor 1")
         sensor2 = Sensor.objects.create(device=device2, code="shared", name="Sensor 2")
         self.assertEqual(sensor2.code, "shared")
+
+
+class SensorMetricModelTest(TestCase):
+    """SensorMetric is the canonical sensor↔metric capability mapping."""
+
+    def setUp(self):
+        site = Site.objects.create(code="site-sm", name="Site SM")
+        self.device = Device.objects.create(
+            site=site, device_uid="dev-sm", name="Device SM",
+        )
+        self.sensor = Sensor.objects.create(
+            device=self.device, code="main", name="Main",
+        )
+        self.metric = MetricDefinition.objects.create(
+            key="temperature_c", display_name="Temperature", unit="°C",
+        )
+
+    def test_create_sensor_metric(self):
+        sm = SensorMetric.objects.create(
+            sensor=self.sensor, metric=self.metric, is_required=True, sort_order=5,
+        )
+        self.assertTrue(sm.is_required)
+        self.assertEqual(sm.sort_order, 5)
+        self.assertTrue(sm.is_active)
+        self.assertIn("dev-sm", str(sm))
+        self.assertIn("main", str(sm))
+        self.assertIn("temperature_c", str(sm))
+
+    def test_unique_sensor_metric_constraint(self):
+        SensorMetric.objects.create(sensor=self.sensor, metric=self.metric)
+        with self.assertRaises(IntegrityError):
+            SensorMetric.objects.create(sensor=self.sensor, metric=self.metric)
+
+    def test_sensor_metrics_m2m(self):
+        """``Sensor.metrics`` exposes the through-relation as M2M."""
+        SensorMetric.objects.create(sensor=self.sensor, metric=self.metric)
+        self.assertIn(self.metric, list(self.sensor.metrics.all()))
+        self.assertIn(self.sensor, list(self.metric.sensors.all()))
+
+    def test_same_metric_on_two_sensors_allowed(self):
+        sensor2 = Sensor.objects.create(
+            device=self.device, code="other", name="Other",
+        )
+        SensorMetric.objects.create(sensor=self.sensor, metric=self.metric)
+        SensorMetric.objects.create(sensor=sensor2, metric=self.metric)
+        self.assertEqual(
+            SensorMetric.objects.filter(metric=self.metric).count(), 2,
+        )

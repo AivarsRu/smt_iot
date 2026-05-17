@@ -18,18 +18,60 @@
         </p>
       </div>
       <div class="page-header__meta" data-role="header-meta">
-        <span class="status-pill" data-role="health-pill">…</span>
-        <span class="page-header__updated" data-role="generated-at">—</span>
-        <button type="button" class="btn btn--primary"
-                data-role="refresh-btn"
-                data-testid="refresh-btn">Atsvaidzināt</button>
-        <label class="auto-refresh-toggle">
-          <input type="checkbox" data-role="auto-refresh-toggle">
-          <span>Auto 30 s</span>
-        </label>
+        {% block header_meta %}
+          <span class="status-pill" data-role="health-pill">…</span>
+          <span class="page-header__updated" data-role="generated-at">—</span>
+          <button type="button" class="btn btn--primary"
+                  data-role="refresh-btn"
+                  data-testid="refresh-btn">Atsvaidzināt</button>
+          <label class="auto-refresh-toggle">
+            <input type="checkbox" data-role="auto-refresh-toggle">
+            <span>Auto 30 s</span>
+          </label>
+        {% endblock %}
+        {% if user.is_authenticated %}
+          <span class="user-pill" data-role="user-pill">
+            {{ user.get_username }}
+          </span>
+          <form method="post" action="{% url 'accounts:logout' %}"
+                class="logout-form">
+            {% csrf_token %}
+            <button type="submit" class="btn" data-role="logout-btn">
+              Iziet
+            </button>
+          </form>
+        {% endif %}
       </div>
     </div>
+    {% if user.is_authenticated %}
+      <nav class="page-nav" aria-label="Galvenā navigācija">
+        <div class="page-container page-nav__inner">
+          <a href="{% url 'dashboard:overview' %}"
+             class="page-nav__link"
+             data-role="nav-dashboard">Pārskats</a>
+          <a href="{% url 'dashboard:assets-list' %}"
+             class="page-nav__link"
+             data-role="nav-assets">Aktīvi</a>
+          <a href="{% url 'dashboard:events-list' %}"
+             class="page-nav__link"
+             data-role="nav-events">Notikumi</a>
+          <a href="{% url 'dashboard:asset-create' %}"
+             class="page-nav__link"
+             data-role="nav-asset-create">Izveidot jaunu aktīvu</a>
+        </div>
+      </nav>
+    {% endif %}
   </header>
+
+  {% if messages %}
+    <div class="page-container messages" data-role="messages">
+      {% for message in messages %}
+        <div class="message message--{{ message.tags|default:'info' }}">
+          {{ message }}
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
 
   <main class="page-container" role="main">
     {% block content %}{% endblock %}

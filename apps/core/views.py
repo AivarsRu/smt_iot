@@ -1,8 +1,7 @@
-from django.shortcuts import render
-
-# Create your views here.
 from django.db import connection
 from django.http import JsonResponse
+from django.shortcuts import redirect, render
+from django.urls import reverse
 
 
 def healthz(request):
@@ -24,3 +23,17 @@ def healthz(request):
         },
         status=status_code,
     )
+
+
+def root_view(request):
+    """
+    Project root.
+
+    Authenticated operators are redirected to the dashboard overview;
+    anonymous visitors get a small public welcome page with a login link.
+    The dashboard URL is reversed (not hardcoded) so a future route rename
+    does not silently break the redirect.
+    """
+    if request.user.is_authenticated:
+        return redirect(reverse("dashboard:overview"))
+    return render(request, "core/welcome.html")

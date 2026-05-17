@@ -1,0 +1,52 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Piesaistīt ierīci — {{ asset.code }}{% endblock %}
+
+{% block header_meta %}{% endblock %}
+
+{% block content %}
+  <p class="back-link">
+    <a href="{% url 'dashboard:asset-configure' asset_code=asset.code %}" rel="noopener">← Atpakaļ uz konfigurāciju</a>
+  </p>
+
+  <section class="dashboard-section" aria-labelledby="device-attach-heading">
+    <div class="section-header">
+      <h2 id="device-attach-heading" class="section-header__title">
+        2. solis — piesaistīt esošu ierīci
+      </h2>
+      <p class="section-header__hint">
+        Saraksts satur tikai nepiesaistītas ierīces no objekta
+        <code>{{ asset.site.code }}</code>. Citas ierīces var atsaistīt
+        Django administrācijā.
+      </p>
+    </div>
+
+    {% if has_errors %}
+      <div class="form-errors">Forma satur kļūdas. Lūdzu, izlabojiet zemāk izceltos laukus.</div>
+    {% endif %}
+
+    {% if form.non_field_errors %}
+      <div class="form-errors">{{ form.non_field_errors|join:" " }}</div>
+    {% endif %}
+
+    <form method="post" novalidate>
+      {% csrf_token %}
+      <fieldset class="form-section">
+        <legend class="form-section__title">Pieejamās ierīces</legend>
+        <div class="form-grid">
+          <div class="form-field form-field--full">
+            <label for="{{ form.existing_device.id_for_label }}">Ierīce *</label>
+            {{ form.existing_device }}
+            {% if form.existing_device.errors %}<p class="form-field__error">{{ form.existing_device.errors|join:" " }}</p>{% endif %}
+          </div>
+        </div>
+      </fieldset>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary"
+                data-role="device-attach-submit">Piesaistīt</button>
+        <a class="btn" href="{% url 'dashboard:asset-configure' asset_code=asset.code %}">Atcelt</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}

@@ -102,3 +102,45 @@ class DeviceProfileMetric(models.Model):
 
     def __str__(self) -> str:
         return f"{self.profile.code} / {self.metric.key}"
+
+
+class SensorMetricPreset(BaseModel):
+    """
+    Reusable single-sensor/metric template used by the operator UI.
+
+    A preset captures the common case "this kind of sensor produces this
+    metric" so the operator does not have to retype the same
+    ``sensor_type`` + ``MetricDefinition`` combination for every new
+    sensor. When chosen in the Stage 4 form, the dashboard prefills:
+
+      * the new Sensor's ``sensor_type`` and ``name`` (from
+        ``default_sensor_name``);
+      * the ``SensorMetric`` row using ``metric``, ``is_required`` and
+        ``sort_order``.
+
+    Presets are templates only — they never appear in measurements or
+    ingestion. The authoritative live mapping remains ``SensorMetric``.
+    """
+
+    code = models.CharField(max_length=64, unique=True)
+    name = models.CharField(max_length=256)
+    description = models.TextField(blank=True)
+    sensor_type = models.CharField(max_length=64, blank=True)
+    metric = models.ForeignKey(
+        MetricDefinition,
+        on_delete=models.PROTECT,
+        related_name="sensor_metric_presets",
+    )
+    default_sensor_name = models.CharField(max_length=256, blank=True)
+    default_unit = models.CharField(max_length=32, blank=True)
+    is_required = models.BooleanField(default=False)
+    sort_order = models.IntegerField(default=0)
+
+    class Meta:
+        verbose_name = "Sensor Metric Preset"
+        verbose_name_plural = "Sensor Metric Presets"
+        ordering = ["sort_order", "code"]
+
+    def __str__(self) -> str:
+        metric_key = getattr(self.metric, "key", str(self.metric_id))
+        return f"{self.code} → {metric_key}"

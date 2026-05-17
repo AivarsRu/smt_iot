@@ -105,6 +105,16 @@ class Sensor(BaseModel):
     name = models.CharField(max_length=256)
     sensor_type = models.CharField(max_length=64, blank=True)
     description = models.TextField(blank=True)
+    # Convenience M2M — actual rows live in ``SensorMetric``. Every metric a
+    # sensor can produce must be declared explicitly through this table; the
+    # ingestion layer uses it to resolve ``Measurement.sensor`` for each
+    # incoming metric key.
+    metrics = models.ManyToManyField(
+        "iot_config.MetricDefinition",
+        through="SensorMetric",
+        related_name="sensors",
+        blank=True,
+    )
 
     class Meta:
         verbose_name = "Sensor"
@@ -116,3 +126,52 @@ class Sensor(BaseModel):
 
     def __str__(self) -> str:
         return f"{self.device.device_uid} / {self.code}"
+
+
+class SensorMetric(BaseModel):
+    """
+    Declares which ``MetricDefinition`` a ``Sensor`` is capable of producing.
+
+    This is the canonical source of sensor↔metric capability used by:
+      * MQTT ingestion (to resolve ``Measurement.sensor`` per metric key);
+      * the simulator (``SimulatorMetricProfile.sensor`` references a
+        ``Sensor`` whose ``SensorMetric`` covers the configured metric);
+      * analytics (``ThresholdRule.sensor`` optionally scopes a rule to a
+        single sensor/metric pair).
+
+    ``iot_config.DeviceProfileMetric`` is kept only as a profile-/template-
+    level catalogue and must not be treated as the live capability mapping.
+    """
+
+    sensor = models.ForeignKey(
+        Sensor,
+        on_delete=models.CASCADE,
+        related_name="sensor_metrics",
+    )
+    metric = models.ForeignKey(
+        "iot_config.MetricDefinition",
+        on_delete=models.PROTECT,
+        related_name="sensor_metrics",
+    )
+    is_required = models.BooleanField(default=False)
+    sort_order = models.IntegerField(default=0)
+
+    class Meta:
+        verbose_name = "Sensor Metric"
+        verbose_name_plural = "Sensor Metrics"
+        ordering = ["sensor", "sort_order", "metric__key"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["sensor", "metric"],
+                name="unique_sensor_metric_sensor_metric",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["metric"]),
+        ]
+
+    def __str__(self) -> str:
+        device_uid = getattr(self.sensor.device, "device_uid", "?")
+        sensor_code = self.sensor.code
+        metric_key = getattr(self.metric, "key", str(self.metric_id))
+        return f"{device_uid} / {sensor_code} / {metric_key}"

@@ -3,11 +3,17 @@ import datetime
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-from apps.assets.models import Asset, AssetType, Device, Sensor, Site
+from apps.assets.models import Asset, AssetType, Device, Sensor, SensorMetric, Site
 from apps.core.models import MqttTopicType, OperationalStatus
 from apps.digital_twin.models import AssetState
 from apps.events.models import Event, EventStatus, EventType, Severity
-from apps.iot_config.models import DeviceProfile, DeviceProfileMetric, MetricDefinition, MqttTopicTemplate
+from apps.iot_config.models import (
+    DeviceProfile,
+    DeviceProfileMetric,
+    MetricDefinition,
+    MqttTopicTemplate,
+    SensorMetricPreset,
+)
 from apps.telemetry.models import Measurement, MeasurementQuality, ProcessingStatus, RawMessage, SourceType
 
 
@@ -216,6 +222,18 @@ class Command(BaseCommand):
             )
             track(created)
 
+        # ── Sensor metric capability ──────────────────────────────────────────
+        # DeviceProfileMetric remains a template-level catalogue; the live
+        # capability mapping per Sensor lives in SensorMetric.
+
+        for sort_idx, (key, (metric, is_required)) in enumerate(metric_objects.items(), start=1):
+            _, created = SensorMetric.objects.update_or_create(
+                sensor=sensor,
+                metric=metric,
+                defaults={"is_required": is_required, "sort_order": sort_idx},
+            )
+            track(created)
+
         # ── Raw telemetry message ─────────────────────────────────────────────
 
         demo_payload = {
@@ -346,8 +364,13 @@ class Command(BaseCommand):
 
         for sort_idx, mp_data in enumerate(DEMO_METRIC_PROFILES, start=1):
             metric_obj, _ = metric_objects[mp_data["key"]]
+            # Sensor-centric: every simulator profile points at the sensor
+            # that produces the metric. Match on (scenario_device, sensor,
+            # metric) so re-runs update the existing row instead of
+            # producing duplicates.
             _, created = SimulatorMetricProfile.objects.update_or_create(
                 scenario_device=scenario_device,
+                sensor=sensor,
                 metric=metric_obj,
                 defaults={
                     "base_value": mp_data["base"],
@@ -361,63 +384,236 @@ class Command(BaseCommand):
             )
             track(created)
 
+        # Migrate any legacy SimulatorMetricProfile rows that the
+        # ``simulator.0002_simulatormetricprofile_sensor`` data migration
+        # could not auto-assign (e.g., seeded before the demo sensor
+        # existed) onto the demo sensor.
+        legacy_profiles = SimulatorMetricProfile.objects.filter(
+            scenario_device=scenario_device, sensor__isnull=True,
+        )
+        if legacy_profiles.exists():
+            updated = legacy_profiles.update(sensor=sensor)
+            updated_count += updated
+
         # ── Analytics threshold rules ─────────────────────────────────────────
         # Demo bounds chosen to be OUTSIDE the simulator's normal operating
         # range, so a normal simulator run does NOT trigger them. They exist
         # as anchors for manual anomaly demonstrations and analytics tests.
 
-        from apps.analytics.models import ThresholdRule
+        from apps.analytics.models import ThresholdRule, ThresholdRuleScope
 
+        # Demo rules are deliberately **sensor-scoped** to the demo charger's
+        # ``main`` sensor. The previous broad-NULL semantics caused one MQTT
+        # message to fire three "temperature_c" rules at once on the demo
+        # sensor *and* would have fired on any other unrelated sensor that
+        # produced temperature_c. With explicit scope_level=SENSOR each rule
+        # is bound to the sensor it is meant for and stays out of unrelated
+        # sensors' way.
         DEMO_THRESHOLD_RULES = [
             {
                 "code": "temperature_c_high_warning",
-                "name": "Charger temperature high (warning)",
+                "name": "Charger 'main' sensor temperature high (warning)",
                 "metric_key": "temperature_c",
                 "lower_bound": None,
                 "upper_bound": 60.0,
                 "severity": Severity.WARNING,
-                "description": "Warn when charger temperature exceeds 60°C.",
+                "description": (
+                    "Warn when the 'main' sensor of charger-001 reports "
+                    "a temperature above 60°C."
+                ),
                 "sort_order": 10,
+                "scope_level": ThresholdRuleScope.SENSOR,
             },
             {
                 "code": "temperature_c_high_error",
-                "name": "Charger temperature critical (error)",
+                "name": "Charger 'main' sensor temperature critical (error)",
                 "metric_key": "temperature_c",
                 "lower_bound": None,
                 "upper_bound": 70.0,
                 "severity": Severity.ERROR,
-                "description": "Error when charger temperature exceeds 70°C.",
+                "description": (
+                    "Error when the 'main' sensor of charger-001 reports "
+                    "a temperature above 70°C."
+                ),
                 "sort_order": 11,
+                "scope_level": ThresholdRuleScope.SENSOR,
             },
             {
                 "code": "battery_soc_low_warning",
-                "name": "Battery state of charge low (warning)",
+                "name": "Charger 'main' battery state of charge low (warning)",
                 "metric_key": "battery_soc_pct",
                 "lower_bound": 20.0,
                 "upper_bound": None,
                 "severity": Severity.WARNING,
-                "description": "Warn when battery state of charge drops below 20 %.",
+                "description": (
+                    "Warn when the 'main' sensor of charger-001 reports a "
+                    "battery state of charge below 20 %."
+                ),
                 "sort_order": 20,
+                "scope_level": ThresholdRuleScope.SENSOR,
             },
         ]
 
         for rule_data in DEMO_THRESHOLD_RULES:
             metric_obj, _ = metric_objects[rule_data["metric_key"]]
+            scope = rule_data["scope_level"]
+            defaults = {
+                "name": rule_data["name"],
+                "description": rule_data["description"],
+                "metric": metric_obj,
+                "scope_level": scope,
+                "site": (
+                    sensor.device.site
+                    if scope == ThresholdRuleScope.SENSOR else None
+                ),
+                "asset": (
+                    sensor.device.asset
+                    if scope == ThresholdRuleScope.SENSOR else None
+                ),
+                "device": (
+                    sensor.device
+                    if scope == ThresholdRuleScope.SENSOR else None
+                ),
+                "sensor": (
+                    sensor if scope == ThresholdRuleScope.SENSOR else None
+                ),
+                "is_enabled": True,
+                "lower_bound": rule_data["lower_bound"],
+                "upper_bound": rule_data["upper_bound"],
+                "severity": rule_data["severity"],
+                "close_when_normal": True,
+                "sort_order": rule_data["sort_order"],
+            }
             _, created = ThresholdRule.objects.update_or_create(
-                code=rule_data["code"],
+                code=rule_data["code"], defaults=defaults,
+            )
+            track(created)
+
+        # ── Operator workflow presets (Phase 7, Task 3B) ────────────
+        # SensorMetricPreset: pairs a common sensor "shape" with the
+        # metric it typically produces. The Stage 3/4 forms use these
+        # to fast-track repeated sensor configuration.
+
+        DEMO_SENSOR_PRESETS = [
+            {
+                "code": "temperature_sensor_preset",
+                "name": "Temperatūras sensors",
+                "description": (
+                    "Universāls temperatūras sensors, kas raksta "
+                    "vērtības metrikā 'temperature_c'."
+                ),
+                "sensor_type": "temperature",
+                "metric_key": "temperature_c",
+                "default_sensor_name": "Temperatūras sensors",
+                "is_required": True,
+                "sort_order": 10,
+            },
+            {
+                "code": "voltage_sensor_preset",
+                "name": "Sprieguma sensors",
+                "description": "Sprieguma sensors metrikai 'voltage_v'.",
+                "sensor_type": "voltage",
+                "metric_key": "voltage_v",
+                "default_sensor_name": "Sprieguma sensors",
+                "is_required": True,
+                "sort_order": 20,
+            },
+            {
+                "code": "power_sensor_preset",
+                "name": "Jaudas sensors",
+                "description": "Jaudas sensors metrikai 'power_w'.",
+                "sensor_type": "power",
+                "metric_key": "power_w",
+                "default_sensor_name": "Jaudas sensors",
+                "is_required": True,
+                "sort_order": 30,
+            },
+            {
+                "code": "battery_soc_sensor_preset",
+                "name": "Baterijas SoC sensors",
+                "description": (
+                    "Baterijas uzlādes līmeņa sensors metrikai "
+                    "'battery_soc_pct'."
+                ),
+                "sensor_type": "battery_soc",
+                "metric_key": "battery_soc_pct",
+                "default_sensor_name": "Baterijas SoC sensors",
+                "is_required": False,
+                "sort_order": 40,
+            },
+        ]
+
+        for preset_data in DEMO_SENSOR_PRESETS:
+            metric_obj, _ = metric_objects[preset_data["metric_key"]]
+            _, created = SensorMetricPreset.objects.update_or_create(
+                code=preset_data["code"],
                 defaults={
-                    "name": rule_data["name"],
-                    "description": rule_data["description"],
+                    "name": preset_data["name"],
+                    "description": preset_data["description"],
+                    "sensor_type": preset_data["sensor_type"],
                     "metric": metric_obj,
-                    "site": None,
-                    "asset": None,
-                    "device": None,
-                    "is_enabled": True,
-                    "lower_bound": rule_data["lower_bound"],
-                    "upper_bound": rule_data["upper_bound"],
-                    "severity": rule_data["severity"],
+                    "default_sensor_name": preset_data["default_sensor_name"],
+                    "is_required": preset_data["is_required"],
+                    "sort_order": preset_data["sort_order"],
+                },
+            )
+            track(created)
+
+        # ThresholdRulePreset: reusable threshold definitions that the
+        # Stage 4 form materialises into concrete ``ThresholdRule`` rows
+        # scoped to a specific Asset/Device/Sensor/Metric.
+
+        from apps.analytics.models import ThresholdRulePreset
+
+        DEMO_THRESHOLD_PRESETS = [
+            {
+                "code": "outdoor_temperature_range",
+                "name": "Āra temperatūras diapazons (-40°C…+40°C)",
+                "description": (
+                    "Brīdina, ja temperatūra iziet ārpus -40°C…+40°C "
+                    "diapazona."
+                ),
+                "metric_key": "temperature_c",
+                "lower_bound": -40.0,
+                "upper_bound": 40.0,
+                "severity": Severity.WARNING,
+            },
+            {
+                "code": "high_temperature_warning",
+                "name": "Augsta temperatūra (>60°C)",
+                "description": "Brīdina, ja temperatūra pārsniedz 60°C.",
+                "metric_key": "temperature_c",
+                "lower_bound": None,
+                "upper_bound": 60.0,
+                "severity": Severity.WARNING,
+            },
+            {
+                "code": "battery_soc_low_warning_preset",
+                "name": "Baterija zem 20%",
+                "description": (
+                    "Brīdina, ja baterijas uzlādes līmenis kļūst zem 20%."
+                ),
+                "metric_key": "battery_soc_pct",
+                "lower_bound": 20.0,
+                "upper_bound": None,
+                "severity": Severity.WARNING,
+            },
+        ]
+
+        for preset_data in DEMO_THRESHOLD_PRESETS:
+            metric_obj, _ = metric_objects[preset_data["metric_key"]]
+            # ``update_or_create`` calls .save() which triggers .clean()
+            # via the preset's own validation. Always pre-fill bounds.
+            obj, created = ThresholdRulePreset.objects.update_or_create(
+                code=preset_data["code"],
+                defaults={
+                    "name": preset_data["name"],
+                    "description": preset_data["description"],
+                    "metric": metric_obj,
+                    "lower_bound": preset_data["lower_bound"],
+                    "upper_bound": preset_data["upper_bound"],
+                    "severity": preset_data["severity"],
                     "close_when_normal": True,
-                    "sort_order": rule_data["sort_order"],
                 },
             )
             track(created)

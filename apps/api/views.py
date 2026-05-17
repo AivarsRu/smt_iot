@@ -36,13 +36,14 @@ from apps.api.serializers import (
     MeasurementSerializer,
     MetricDefinitionSerializer,
     RawMessageSerializer,
+    SensorMetricSerializer,
     SensorSerializer,
     SimulatorRunSerializer,
     SimulatorScenarioSerializer,
     SiteSerializer,
     ThresholdRuleSerializer,
 )
-from apps.assets.models import Asset, Device, Sensor, Site
+from apps.assets.models import Asset, Device, Sensor, SensorMetric, Site
 from apps.core.models import OperationalStatus
 from apps.digital_twin.models import AssetState
 from apps.events.models import Event, EventStatus, EventType, Severity
@@ -262,8 +263,67 @@ class DeviceViewSet(IdOrCodeLookupMixin, LimitedListMixin, viewsets.ReadOnlyMode
 # ── Sensors ──────────────────────────────────────────────────────────────────
 
 class SensorViewSet(LimitedListMixin, viewsets.ReadOnlyModelViewSet):
-    queryset = Sensor.objects.select_related("device").order_by("device__device_uid", "code")
     serializer_class = SensorSerializer
+
+    def get_queryset(self):
+        qs = (
+            Sensor.objects
+            .select_related("device")
+            .prefetch_related("sensor_metrics__metric")
+            .order_by("device__device_uid", "code")
+        )
+        request = self.request
+        if request is None:
+            return qs
+
+        raw_device = request.query_params.get("device")
+        qs = filter_by_id_or_code(
+            qs, raw_device,
+            code_field="device__device_uid", id_field="device__id", param="device",
+        )
+        return qs
+
+
+# ── Sensor metrics ───────────────────────────────────────────────────────────
+
+class SensorMetricViewSet(LimitedListMixin, viewsets.ReadOnlyModelViewSet):
+    """
+    Read-only view of the per-sensor metric capability mapping. Filterable
+    by ``sensor`` (id or code), ``device`` (id or device_uid), and
+    ``metric`` (id or key).
+    """
+
+    serializer_class = SensorMetricSerializer
+
+    def get_queryset(self):
+        qs = (
+            SensorMetric.objects
+            .select_related("sensor", "sensor__device", "metric")
+            .order_by("sensor__device__device_uid", "sensor__code",
+                      "sort_order", "metric__key")
+        )
+        request = self.request
+        if request is None:
+            return qs
+
+        raw_sensor = request.query_params.get("sensor")
+        qs = filter_by_id_or_code(
+            qs, raw_sensor, code_field="sensor__code", id_field="sensor__id",
+            param="sensor",
+        )
+
+        raw_device = request.query_params.get("device")
+        qs = filter_by_id_or_code(
+            qs, raw_device, code_field="sensor__device__device_uid",
+            id_field="sensor__device__id", param="device",
+        )
+
+        raw_metric = request.query_params.get("metric")
+        qs = filter_by_id_or_code(
+            qs, raw_metric, code_field="metric__key", id_field="metric__id",
+            param="metric",
+        )
+        return qs
 
 
 # ── Metric definitions ───────────────────────────────────────────────────────
@@ -310,13 +370,28 @@ class AssetStateViewSet(LimitedListMixin, viewsets.ReadOnlyModelViewSet):
 # ── Measurements ─────────────────────────────────────────────────────────────
 
 def _apply_measurement_filters(qs, request, *, restrict_to_asset: bool):
-    """Apply Measurement-style query parameters to ``qs``."""
+    """Apply Measurement-style query parameters to ``qs``.
+
+    Supported filters (all optional, all id-or-code where applicable):
+      * ``asset``    — only when ``restrict_to_asset`` is True (top-level
+                       list endpoint). Nested asset routes hard-bind the
+                       FK and skip this branch.
+      * ``device``   — device UUID or device_uid.
+      * ``sensor``   — sensor UUID or sensor code. Added in Phase 7,
+                       Task 4A so the event-detail timeline can pin a
+                       chart to one specific sensor.
+      * ``metric``   — metric UUID or metric key.
+      * ``from``/``to`` — ISO 8601 timestamp range on ``Measurement.timestamp``.
+    """
     if restrict_to_asset:
         raw_asset = request.query_params.get("asset")
         qs = filter_by_id_or_code(qs, raw_asset, code_field="asset__code", id_field="asset__id", param="asset")
 
     raw_device = request.query_params.get("device")
     qs = filter_by_id_or_code(qs, raw_device, code_field="device__device_uid", id_field="device__id", param="device")
+
+    raw_sensor = request.query_params.get("sensor")
+    qs = filter_by_id_or_code(qs, raw_sensor, code_field="sensor__code", id_field="sensor__id", param="sensor")
 
     raw_metric = request.query_params.get("metric")
     qs = filter_by_id_or_code(qs, raw_metric, code_field="metric__key", id_field="metric__id", param="metric")
@@ -345,13 +420,34 @@ class MeasurementViewSet(LimitedListMixin, viewsets.ReadOnlyModelViewSet):
 # ── Events ───────────────────────────────────────────────────────────────────
 
 def _apply_event_filters(qs, request, *, restrict_to_asset: bool):
-    """Apply Event-style query parameters to ``qs``."""
+    """Apply Event-style query parameters to ``qs``.
+
+    Supported filters (all optional, all id-or-code where applicable):
+      * ``asset``       — only when ``restrict_to_asset`` is True; nested
+                          asset routes hard-bind the FK.
+      * ``device``      — device UUID or device_uid.
+      * ``sensor``      — sensor UUID or sensor code. Added in Phase 7,
+                          Task 4A so the operator events page can pin to
+                          one sensor.
+      * ``metric``      — metric UUID or metric key. Added in Phase 7,
+                          Task 4A for sensor + metric correlation.
+      * ``status``      — EventStatus choice (validated, 400 on bad value).
+      * ``event_type``  — EventType choice (validated).
+      * ``severity``    — Severity choice (validated).
+      * ``from``/``to`` — ISO 8601 range on ``Event.detected_at``.
+    """
     if restrict_to_asset:
         raw_asset = request.query_params.get("asset")
         qs = filter_by_id_or_code(qs, raw_asset, code_field="asset__code", id_field="asset__id", param="asset")
 
     raw_device = request.query_params.get("device")
     qs = filter_by_id_or_code(qs, raw_device, code_field="device__device_uid", id_field="device__id", param="device")
+
+    raw_sensor = request.query_params.get("sensor")
+    qs = filter_by_id_or_code(qs, raw_sensor, code_field="sensor__code", id_field="sensor__id", param="sensor")
+
+    raw_metric = request.query_params.get("metric")
+    qs = filter_by_id_or_code(qs, raw_metric, code_field="metric__key", id_field="metric__id", param="metric")
 
     raw_status = request.query_params.get("status")
     if raw_status:
@@ -435,7 +531,7 @@ class RawMessageViewSet(LimitedListMixin, viewsets.ReadOnlyModelViewSet):
 class ThresholdRuleViewSet(LimitedListMixin, viewsets.ReadOnlyModelViewSet):
     queryset = (
         ThresholdRule.objects
-        .select_related("metric", "site", "asset", "device")
+        .select_related("metric", "site", "asset", "device", "sensor")
         .order_by("sort_order", "code")
     )
     serializer_class = ThresholdRuleSerializer

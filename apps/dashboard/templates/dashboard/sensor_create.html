@@ -1,0 +1,74 @@
+{% extends "dashboard/base.html" %}
+{% load static %}
+
+{% block title %}Pievienot sensoru — {{ device.device_uid }}{% endblock %}
+
+{% block header_meta %}{% endblock %}
+
+{% block content %}
+  <p class="back-link">
+    <a href="{% url 'dashboard:asset-configure' asset_code=asset.code %}" rel="noopener">← Atpakaļ uz konfigurāciju</a>
+  </p>
+
+  <section class="dashboard-section" aria-labelledby="sensor-create-heading">
+    <div class="section-header">
+      <h2 id="sensor-create-heading" class="section-header__title">
+        3. solis — pievienot sensoru
+      </h2>
+      <p class="section-header__hint">
+        Ierīcei <code>{{ device.device_uid }}</code> ({{ device.name }})
+        tiks pievienots viens sensors. <code>Sensor.code</code> tiek
+        ģenerēts automātiski. Pēc izveides notiks pārvirze uz metrikas /
+        sliekšņa pievienošanas lapu.
+      </p>
+    </div>
+
+    {% if has_errors %}
+      <div class="form-errors">Forma satur kļūdas. Lūdzu, izlabojiet zemāk izceltos laukus.</div>
+    {% endif %}
+
+    {% if form.non_field_errors %}
+      <div class="form-errors">{{ form.non_field_errors|join:" " }}</div>
+    {% endif %}
+
+    <form method="post" novalidate data-stage-form>
+      {% csrf_token %}
+
+      <fieldset class="form-section">
+        <legend class="form-section__title">Jauns sensors</legend>
+        <div class="form-grid">
+          <div class="form-field form-field--full">
+            <label for="{{ form.preset.id_for_label }}">Sensora preset (pēc izvēles)</label>
+            {{ form.preset }}
+            <p class="form-field__hint">Preset aizpilda sensora nosaukumu, tipu un Stage 4 metriku.</p>
+          </div>
+          <div class="form-field">
+            <label for="{{ form.name.id_for_label }}">Nosaukums</label>
+            {{ form.name }}
+            {% if form.name.errors %}<p class="form-field__error">{{ form.name.errors|join:" " }}</p>{% endif %}
+            <p class="form-field__hint">Obligāts, ja preset nav izvēlēts.</p>
+          </div>
+          <div class="form-field">
+            <label for="{{ form.sensor_type.id_for_label }}">Sensora tips</label>
+            {{ form.sensor_type }}
+            <p class="form-field__hint">Brīvs teksts, piem., <code>temperature</code>.</p>
+          </div>
+          <div class="form-field form-field--full">
+            <label for="{{ form.description.id_for_label }}">Apraksts</label>
+            {{ form.description }}
+          </div>
+        </div>
+      </fieldset>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn--primary"
+                data-role="sensor-create-submit">Pievienot sensoru</button>
+        <a class="btn" href="{% url 'dashboard:asset-configure' asset_code=asset.code %}">Atcelt</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}
+
+{% block extra_scripts %}
+  <script src="{% static 'dashboard/asset_create.js' %}" defer></script>
+{% endblock %}

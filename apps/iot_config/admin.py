@@ -1,6 +1,12 @@
 from django.contrib import admin
 
-from .models import DeviceProfile, DeviceProfileMetric, MetricDefinition, MqttTopicTemplate
+from .models import (
+    DeviceProfile,
+    DeviceProfileMetric,
+    MetricDefinition,
+    MqttTopicTemplate,
+    SensorMetricPreset,
+)
 
 
 class DeviceProfileMetricInline(admin.TabularInline):
@@ -33,3 +39,15 @@ class DeviceProfileAdmin(admin.ModelAdmin):
     list_filter = ("is_active",)
     ordering = ("code",)
     inlines = [DeviceProfileMetricInline]
+
+
+@admin.register(SensorMetricPreset)
+class SensorMetricPresetAdmin(admin.ModelAdmin):
+    list_display = (
+        "code", "name", "metric", "sensor_type",
+        "is_required", "sort_order", "is_active",
+    )
+    search_fields = ("code", "name", "metric__key", "sensor_type")
+    list_filter = ("is_required", "is_active")
+    ordering = ("sort_order", "code")
+    list_select_related = ("metric",)
