@@ -301,10 +301,11 @@ def _run_pipeline(
     measurements_updated = 0
     events_created = 0
     unknown_metric_keys: list[str] = []
+    persisted_measurements: list = []
 
     with transaction.atomic():
         for metric_key, raw_value in metrics_payload.items():
-            result = _process_one_metric(
+            result, measurement_obj = _process_one_metric(
                 metric_key=metric_key,
                 raw_value=raw_value,
                 site=site,
@@ -317,8 +318,12 @@ def _run_pipeline(
             )
             if result == "created":
                 measurements_created += 1
+                if measurement_obj is not None:
+                    persisted_measurements.append(measurement_obj)
             elif result == "updated":
                 measurements_updated += 1
+                if measurement_obj is not None:
+                    persisted_measurements.append(measurement_obj)
             elif result == "unknown":
                 unknown_metric_keys.append(metric_key)
                 events_created += _create_unknown_metric_event(
@@ -363,15 +368,134 @@ def _run_pipeline(
                 measurement_ts=measurement_ts,
             )
 
+    # 19. Threshold analytics (outside the persistence transaction). Errors here
+    #     must NOT corrupt successfully stored telemetry — failures are recorded
+    #     in IngestionResult.errors and surfaced via an ingestion_error Event.
+    analytics_events_created = 0
+    analytics_errors: list[str] = []
+    if persisted_measurements:
+        analytics_events_created, analytics_errors_list = _evaluate_thresholds(
+            persisted_measurements,
+            raw_message=raw_message,
+            site=site,
+            asset=asset,
+            device=device,
+        )
+        analytics_errors.extend(analytics_errors_list)
+        if analytics_errors:
+            events_created += 1  # the ingestion_error event recorded by _evaluate_thresholds
+
+    # 20. Communication-timeout recovery: best-effort close of any open
+    #     timeout event for this device. Never creates timeout events here;
+    #     periodic detection lives in `check_communication_timeouts`.
+    if total_stored > 0:
+        recovery_errors = _close_communication_timeout_for_recovered_device(
+            device, raw_message=raw_message, site=site, asset=asset,
+        )
+        analytics_errors.extend(recovery_errors)
+
     return IngestionResult(
         success=measurements_created + measurements_updated > 0,
         duplicate=False,
         raw_message=raw_message,
         measurements_created=measurements_created,
         measurements_updated=measurements_updated,
-        events_created=events_created,
-        errors=[],
+        events_created=events_created + analytics_events_created,
+        analytics_events_created=analytics_events_created,
+        errors=analytics_errors,
     )
+
+
+def _close_communication_timeout_for_recovered_device(
+    device, *, raw_message, site, asset,
+) -> list[str]:
+    """
+    Best-effort: close any open communication_timeout Event for this device.
+    Errors are isolated and never roll back telemetry.
+    """
+    try:
+        from apps.analytics.services.communication_timeouts import (
+            close_communication_timeout_for_device,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Could not import communication_timeouts service")
+        return [f"Communication timeout close import failed: {exc}"]
+
+    try:
+        close_communication_timeout_for_device(device)
+        return []
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Failed to close communication_timeout for device_uid=%s",
+            getattr(device, "device_uid", "<unknown>"),
+        )
+        try:
+            _create_event(
+                event_type=EventType.INGESTION_ERROR,
+                severity=Severity.WARNING,
+                title="Communication timeout close failed",
+                description=str(exc),
+                site=site,
+                asset=asset,
+                device=device,
+                raw_message=raw_message,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return [f"Communication timeout close failed: {exc}"]
+
+
+def _evaluate_thresholds(
+    measurements,
+    *,
+    raw_message,
+    site,
+    asset,
+    device,
+) -> tuple[int, list[str]]:
+    """
+    Run threshold analytics on the given Measurements after they have been
+    committed. Returns (events_created, errors). Catches every exception so
+    that telemetry persistence is never reverted by an analytics bug.
+    """
+    try:
+        from apps.analytics.services.thresholds import evaluate_measurements_thresholds
+    except Exception as exc:  # noqa: BLE001 — analytics import must never break ingestion
+        logger.exception("Could not import threshold analytics module")
+        return 0, [f"Analytics import failed: {exc}"]
+
+    try:
+        result = evaluate_measurements_thresholds(measurements)
+        events_total = result.events_created + result.events_updated + result.events_closed
+        errors = list(result.errors)
+        if errors:
+            _create_event(
+                event_type=EventType.INGESTION_ERROR,
+                severity=Severity.WARNING,
+                title="Threshold analytics partial failure",
+                description="; ".join(errors[:3]),
+                site=site,
+                asset=asset,
+                device=device,
+                raw_message=raw_message,
+            )
+        return events_total, errors
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Unexpected threshold analytics failure")
+        try:
+            _create_event(
+                event_type=EventType.INGESTION_ERROR,
+                severity=Severity.WARNING,
+                title="Threshold analytics error",
+                description=str(exc),
+                site=site,
+                asset=asset,
+                device=device,
+                raw_message=raw_message,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return 0, [f"Threshold evaluation failed: {exc}"]
 
 
 # ── Metric processing helpers ─────────────────────────────────────────────────
@@ -386,26 +510,28 @@ def _process_one_metric(
     metric_def_cache,
     raw_message,
     measurement_ts,
-) -> str:
+):
     """
     Attempt to create or update a single Measurement.
-    Returns one of: 'created', 'updated', 'unknown', 'invalid'.
+    Returns a tuple ``(status, measurement)`` where ``status`` is one of
+    ``'created' | 'updated' | 'unknown' | 'invalid'`` and ``measurement`` is
+    the persisted Measurement object (or ``None`` when nothing was stored).
     """
     from apps.iot_config.models import MetricDefinition
 
     try:
         metric_def = MetricDefinition.objects.get(key=metric_key)
     except MetricDefinition.DoesNotExist:
-        return "unknown"
+        return "unknown", None
 
     try:
         value_float, value_int, value_bool, value_text = _coerce_metric_value(
             raw_value, metric_def.data_type
         )
     except (TypeError, ValueError):
-        return "invalid"
+        return "invalid", None
 
-    _, created = Measurement.objects.update_or_create(
+    measurement_obj, created = Measurement.objects.update_or_create(
         raw_message=raw_message,
         metric=metric_def,
         defaults={
@@ -422,7 +548,7 @@ def _process_one_metric(
             "quality": MeasurementQuality.GOOD,
         },
     )
-    return "created" if created else "updated"
+    return ("created" if created else "updated"), measurement_obj
 
 
 def _coerce_metric_value(raw_value, data_type: str) -> tuple:

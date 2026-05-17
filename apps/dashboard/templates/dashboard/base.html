@@ -1,0 +1,51 @@
+{% load static %}
+<!doctype html>
+<html lang="lv">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}SMT Digital Solution{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'dashboard/dashboard.css' %}">
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+  <header class="page-header" role="banner">
+    <div class="page-container">
+      <div class="page-header__brand">
+        <h1 class="page-header__title">SMT Digital Solution</h1>
+        <p class="page-header__subtitle">
+          IoT infrastructure monitoring and digital twin prototype
+        </p>
+      </div>
+      <div class="page-header__meta" data-role="header-meta">
+        <span class="status-pill" data-role="health-pill">…</span>
+        <span class="page-header__updated" data-role="generated-at">—</span>
+        <button type="button" class="btn btn--primary"
+                data-role="refresh-btn"
+                data-testid="refresh-btn">Atsvaidzināt</button>
+        <label class="auto-refresh-toggle">
+          <input type="checkbox" data-role="auto-refresh-toggle">
+          <span>Auto 30 s</span>
+        </label>
+      </div>
+    </div>
+  </header>
+
+  <main class="page-container" role="main">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="page-footer">
+    <div class="page-container">
+      <p>
+        Dati nāk no
+        <a href="/api/overview/" rel="noopener">tikai-lasīšanas REST API</a>.
+        Vairāk: <a href="/api/" rel="noopener">/api/</a>.
+      </p>
+    </div>
+  </footer>
+
+  {% block dashboard_config %}{% endblock %}
+  {% block extra_scripts %}{% endblock %}
+</body>
+</html>

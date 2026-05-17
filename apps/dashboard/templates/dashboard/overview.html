@@ -1,0 +1,84 @@
+{% extends "dashboard/base.html" %}
+{% load static %}
+
+{% block title %}Pārskats — SMT Digital Solution{% endblock %}
+
+{% block content %}
+  {# ── Top summary cards ─────────────────────────────────────────────── #}
+  <section class="dashboard-section" aria-labelledby="overview-heading">
+    <div class="section-header">
+      <h2 id="overview-heading" class="section-header__title">Sistēmas pārskats</h2>
+      <p class="section-header__hint">Skaitļi nāk no <code>/api/overview/</code>.</p>
+    </div>
+    <div class="card-grid" data-role="overview-cards">
+      <div class="state state--loading" data-role="overview-state">Ielādē…</div>
+    </div>
+  </section>
+
+  {# ── Asset status table ────────────────────────────────────────────── #}
+  <section class="dashboard-section" aria-labelledby="assets-heading">
+    <div class="section-header">
+      <h2 id="assets-heading" class="section-header__title">Aktīvu statuss</h2>
+      <p class="section-header__hint">Skaitļi nāk no <code>/api/overview/assets/</code>.</p>
+    </div>
+    <div class="counts-row" data-role="assets-counts"></div>
+    <div data-role="assets-table-wrapper">
+      <div class="state state--loading" data-role="assets-state">Ielādē…</div>
+    </div>
+  </section>
+
+  {# ── Recent events ─────────────────────────────────────────────────── #}
+  <section class="dashboard-section" aria-labelledby="events-heading">
+    <div class="section-header">
+      <h2 id="events-heading" class="section-header__title">Notikumi</h2>
+      <p class="section-header__hint">Skaitļi nāk no <code>/api/overview/events/</code>.</p>
+    </div>
+    <div class="counts-row" data-role="events-counts"></div>
+    <div data-role="events-list-wrapper">
+      <div class="state state--loading" data-role="events-state">Ielādē…</div>
+    </div>
+  </section>
+
+  {# ── Telemetry ─────────────────────────────────────────────────────── #}
+  <section class="dashboard-section" aria-labelledby="telemetry-heading">
+    <div class="section-header">
+      <h2 id="telemetry-heading" class="section-header__title">Telemetrija</h2>
+      <p class="section-header__hint">Skaitļi nāk no <code>/api/overview/telemetry/</code>.</p>
+    </div>
+    <div class="counts-row" data-role="telemetry-counts"></div>
+    <div data-role="telemetry-metrics-wrapper">
+      <h3 class="subsection-title">Jaunākās vērtības pa metrikām</h3>
+      <div class="state state--loading" data-role="telemetry-metrics-state">Ielādē…</div>
+    </div>
+    <div data-role="telemetry-recent-wrapper">
+      <h3 class="subsection-title">Pēdējie mērījumi</h3>
+      <div class="state state--loading" data-role="telemetry-recent-state">Ielādē…</div>
+    </div>
+  </section>
+
+  {# ── Simulator ─────────────────────────────────────────────────────── #}
+  <section class="dashboard-section" aria-labelledby="simulator-heading">
+    <div class="section-header">
+      <h2 id="simulator-heading" class="section-header__title">Simulators</h2>
+      <p class="section-header__hint">
+        Skaitļi nāk no <code>/api/overview/simulator/</code>.
+        Sākt/apturēt vadību šajā fāzē nav.
+      </p>
+    </div>
+    <div class="counts-row" data-role="simulator-counts"></div>
+    <div data-role="simulator-runs-wrapper">
+      <h3 class="subsection-title">Pēdējie palaidieni</h3>
+      <div class="state state--loading" data-role="simulator-runs-state">Ielādē…</div>
+    </div>
+  </section>
+{% endblock %}
+
+{% block dashboard_config %}
+  {# All endpoint URLs and small config flags are passed to dashboard.js
+     via this JSON script block. dashboard.js reads it via getElementById. #}
+  {{ dashboard_config|json_script:"dashboard-config" }}
+{% endblock %}
+
+{% block extra_scripts %}
+  <script src="{% static 'dashboard/dashboard.js' %}" defer></script>
+{% endblock %}

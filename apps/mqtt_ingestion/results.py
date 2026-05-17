@@ -10,4 +10,5 @@ class IngestionResult:
     measurements_created: int = 0
     measurements_updated: int = 0
     events_created: int = 0
+    analytics_events_created: int = 0
     errors: list = field(default_factory=list)

@@ -934,3 +934,130 @@ class RunMqttWorkerCommandTest(SimpleTestCase):
         ):
             with self.assertRaises(CommandError):
                 call_command("run_mqtt_worker", "--once", "--timeout-seconds", "1")
+
+
+# ── Threshold analytics integration tests ────────────────────────────────────
+
+class IngestionThresholdAnalyticsTest(IngestionIntegrationBase):
+    """
+    Verifies that process_mqtt_message triggers the analytics threshold
+    service after Measurement persistence, creates threshold_anomaly Events
+    on violations, and closes them when values return to normal.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.analytics.models import ThresholdRule
+        ThresholdRule.objects.create(
+            code="temperature_c_high_warning",
+            name="High temperature",
+            metric=self.m_temp,
+            upper_bound=60.0,
+            severity="warning",
+            is_enabled=True,
+            close_when_normal=True,
+        )
+
+    def _payload_with_temp(self, temperature: float, *, message_id: str) -> dict:
+        return {
+            "message_id": message_id,
+            "device_id": "charger-001",
+            "asset_id": "charger-001",
+            "timestamp": "2026-05-16T10:00:00Z",
+            "metrics": {
+                "voltage_v": 52.3,
+                "temperature_c": temperature,
+            },
+            "status": "charging",
+            "firmware_version": "1.2.3",
+        }
+
+    def test_normal_telemetry_does_not_create_threshold_anomaly(self):
+        from apps.events.models import Event, EventType
+        result = process_mqtt_message(
+            DEMO_TOPIC, self._payload_with_temp(30.0, message_id="t-normal-1"),
+        )
+        self.assertTrue(result.success)
+        self.assertEqual(result.analytics_events_created, 0)
+        self.assertEqual(
+            Event.objects.filter(event_type=EventType.THRESHOLD_ANOMALY).count(), 0,
+        )
+
+    def test_high_temperature_creates_threshold_anomaly(self):
+        from apps.events.models import Event, EventStatus, EventType
+        result = process_mqtt_message(
+            DEMO_TOPIC, self._payload_with_temp(75.0, message_id="t-high-1"),
+        )
+        self.assertTrue(result.success)
+        self.assertEqual(result.analytics_events_created, 1)
+        ev = Event.objects.get(event_type=EventType.THRESHOLD_ANOMALY)
+        self.assertEqual(ev.status, EventStatus.OPEN)
+        self.assertEqual(ev.payload["rule_code"], "temperature_c_high_warning")
+        self.assertEqual(ev.payload["value"], 75.0)
+        self.assertEqual(ev.payload["upper_bound"], 60.0)
+
+    def test_returning_to_normal_closes_open_anomaly(self):
+        from apps.events.models import Event, EventStatus, EventType
+        process_mqtt_message(
+            DEMO_TOPIC, self._payload_with_temp(75.0, message_id="t-high-1"),
+        )
+        self.assertEqual(
+            Event.objects.filter(
+                event_type=EventType.THRESHOLD_ANOMALY,
+                status=EventStatus.OPEN,
+            ).count(),
+            1,
+        )
+
+        process_mqtt_message(
+            DEMO_TOPIC, self._payload_with_temp(30.0, message_id="t-normal-1"),
+        )
+        ev = Event.objects.get(event_type=EventType.THRESHOLD_ANOMALY)
+        self.assertEqual(ev.status, EventStatus.CLOSED)
+        self.assertIsNotNone(ev.closed_at)
+
+    def test_repeated_high_telemetry_keeps_single_open_anomaly(self):
+        from apps.events.models import Event, EventStatus, EventType
+        process_mqtt_message(
+            DEMO_TOPIC, self._payload_with_temp(75.0, message_id="t-high-1"),
+        )
+        process_mqtt_message(
+            DEMO_TOPIC, self._payload_with_temp(80.0, message_id="t-high-2"),
+        )
+        self.assertEqual(
+            Event.objects.filter(
+                event_type=EventType.THRESHOLD_ANOMALY,
+                status=EventStatus.OPEN,
+            ).count(),
+            1,
+        )
+
+    def test_analytics_failure_does_not_break_telemetry_persistence(self):
+        """
+        If the threshold service raises mid-way, telemetry must still be
+        committed and the IngestionResult must report the analytics error
+        in ``errors`` while keeping ``success=True``.
+        """
+        from apps.events.models import Event, EventType
+
+        with patch(
+            "apps.analytics.services.thresholds.evaluate_measurements_thresholds",
+            side_effect=RuntimeError("analytics blew up"),
+        ):
+            result = process_mqtt_message(
+                DEMO_TOPIC,
+                self._payload_with_temp(75.0, message_id="t-analytics-fail-1"),
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.measurements_created, 2)
+        self.assertTrue(any("analytics blew up" in e for e in result.errors))
+        # No threshold_anomaly created (analytics failed) but telemetry was persisted.
+        self.assertEqual(
+            Event.objects.filter(event_type=EventType.THRESHOLD_ANOMALY).count(), 0,
+        )
+        self.assertEqual(Measurement.objects.count(), 2)
+        # An ingestion_error event was recorded for the analytics failure.
+        self.assertEqual(
+            Event.objects.filter(event_type=EventType.INGESTION_ERROR).count(), 1,
+        )

@@ -148,6 +148,18 @@ MQTT_SUBSCRIBE_TOPICS = env.list(
 MQTT_SIMULATOR_USERNAME = env("MQTT_SIMULATOR_USERNAME", default="smt_simulator")
 MQTT_SIMULATOR_PASSWORD = env("MQTT_SIMULATOR_PASSWORD", default="")
 
+# Communication timeout analytics
+# A device is considered timed out when it has not communicated within
+# expected_interval_seconds * COMMUNICATION_TIMEOUT_GRACE_MULTIPLIER. The grace
+# factor avoids flagging a single late message as an outage.
+COMMUNICATION_TIMEOUT_GRACE_MULTIPLIER = env.float(
+    "COMMUNICATION_TIMEOUT_GRACE_MULTIPLIER", default=3.0,
+)
+# Fallback timeout (seconds) when a Device has no expected_interval_seconds.
+COMMUNICATION_TIMEOUT_DEFAULT_SECONDS = env.int(
+    "COMMUNICATION_TIMEOUT_DEFAULT_SECONDS", default=300,
+)
+
 
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators

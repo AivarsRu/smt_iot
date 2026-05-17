@@ -361,6 +361,67 @@ class Command(BaseCommand):
             )
             track(created)
 
+        # ── Analytics threshold rules ─────────────────────────────────────────
+        # Demo bounds chosen to be OUTSIDE the simulator's normal operating
+        # range, so a normal simulator run does NOT trigger them. They exist
+        # as anchors for manual anomaly demonstrations and analytics tests.
+
+        from apps.analytics.models import ThresholdRule
+
+        DEMO_THRESHOLD_RULES = [
+            {
+                "code": "temperature_c_high_warning",
+                "name": "Charger temperature high (warning)",
+                "metric_key": "temperature_c",
+                "lower_bound": None,
+                "upper_bound": 60.0,
+                "severity": Severity.WARNING,
+                "description": "Warn when charger temperature exceeds 60°C.",
+                "sort_order": 10,
+            },
+            {
+                "code": "temperature_c_high_error",
+                "name": "Charger temperature critical (error)",
+                "metric_key": "temperature_c",
+                "lower_bound": None,
+                "upper_bound": 70.0,
+                "severity": Severity.ERROR,
+                "description": "Error when charger temperature exceeds 70°C.",
+                "sort_order": 11,
+            },
+            {
+                "code": "battery_soc_low_warning",
+                "name": "Battery state of charge low (warning)",
+                "metric_key": "battery_soc_pct",
+                "lower_bound": 20.0,
+                "upper_bound": None,
+                "severity": Severity.WARNING,
+                "description": "Warn when battery state of charge drops below 20 %.",
+                "sort_order": 20,
+            },
+        ]
+
+        for rule_data in DEMO_THRESHOLD_RULES:
+            metric_obj, _ = metric_objects[rule_data["metric_key"]]
+            _, created = ThresholdRule.objects.update_or_create(
+                code=rule_data["code"],
+                defaults={
+                    "name": rule_data["name"],
+                    "description": rule_data["description"],
+                    "metric": metric_obj,
+                    "site": None,
+                    "asset": None,
+                    "device": None,
+                    "is_enabled": True,
+                    "lower_bound": rule_data["lower_bound"],
+                    "upper_bound": rule_data["upper_bound"],
+                    "severity": rule_data["severity"],
+                    "close_when_normal": True,
+                    "sort_order": rule_data["sort_order"],
+                },
+            )
+            track(created)
+
         self.stdout.write(
             self.style.SUCCESS(
                 f"seed_demo_data complete: {created_count} created, {updated_count} updated."
