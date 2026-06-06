@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -302,11 +303,16 @@ class DashboardOverviewPageTest(_AuthenticatedClientMixin, TestCase):
         cfg = _read_dashboard_config(
             self.response.content.decode("utf-8"), "dashboard-config",
         )
+        # Phase 7, Task 4 — simulator endpoints have moved to the
+        # dedicated /dashboard/simulator/ page; the overview only
+        # advertises the strictly operational summary endpoints.
         for required in (
             "overview", "overviewAssets", "overviewEvents",
-            "overviewTelemetry", "overviewSimulator",
+            "overviewTelemetry",
         ):
             self.assertIn(required, cfg["endpoints"])
+        self.assertNotIn("overviewSimulator", cfg["endpoints"])
+        self.assertNotIn("simulatorStatus", cfg["endpoints"])
         self.assertIn("__CODE__", cfg["assetSummaryUrlTemplate"])
 
 
@@ -387,10 +393,14 @@ class NavigationMenuTest(_AuthenticatedClientMixin, TestCase):
         self.assertContains(resp, 'data-role="nav-assets"')
         self.assertContains(resp, 'data-role="nav-asset-create"')
         self.assertContains(resp, 'data-role="nav-events"')
+        # Phase 7, Task 4 — Simulators is now a top-level navigation entry.
+        self.assertContains(resp, 'data-role="nav-simulator"')
+        self.assertContains(resp, ">Simulators</a>")
         self.assertContains(resp, f'href="{reverse("dashboard:overview")}"')
         self.assertContains(resp, f'href="{reverse("dashboard:assets-list")}"')
         self.assertContains(resp, f'href="{reverse("dashboard:asset-create")}"')
         self.assertContains(resp, f'href="{reverse("dashboard:events-list")}"')
+        self.assertContains(resp, f'href="{reverse("dashboard:simulator")}"')
 
     def test_logout_form_present_for_authenticated_users(self):
         resp = self.client.get("/dashboard/")
@@ -1918,3 +1928,553 @@ class ThresholdRuleEditPageTest(_AuthenticatedClientMixin, TestCase):
         body = resp.content.decode("utf-8")
         self.assertIn("re_metric", body)
         self.assertIn(self.rule.code, body)
+
+
+# ── Phase 7, Task 3A — Simulator control panel + live updates ───────────────
+
+
+class OverviewSimulatorPanelRemovedTest(_AuthenticatedClientMixin, TestCase):
+    """
+    Phase 7, Task 4 — the overview MUST NOT render any simulator
+    control / run / permission UI. Everything simulator-related has
+    moved to /dashboard/simulator/. This test class guards that
+    invariant so a future change cannot quietly re-introduce simulator
+    chrome onto the operational dashboard.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.response = self.client.get("/dashboard/")
+        self.body = self.response.content.decode("utf-8")
+
+    def test_overview_returns_200(self):
+        self.assertEqual(self.response.status_code, 200)
+
+    def test_overview_does_not_render_simulator_control_panel(self):
+        self.assertNotIn('data-role="simulator-control"', self.body)
+        self.assertNotIn('data-role="simulator-start-btn"', self.body)
+        self.assertNotIn('data-role="simulator-stop-btn"', self.body)
+        self.assertNotIn('data-role="simulator-run-once-btn"', self.body)
+        self.assertNotIn('data-role="simulator-permission-notice"', self.body)
+
+    def test_overview_does_not_render_simulator_run_table(self):
+        self.assertNotIn('data-role="simulator-runs-wrapper"', self.body)
+        self.assertNotIn('data-role="simulator-runs-state"', self.body)
+        self.assertNotIn('data-role="simulator-counts"', self.body)
+
+    def test_overview_does_not_render_pedejais_simulators_card(self):
+        # The summary card was rendered client-side with the literal
+        # "Pēdējais simulators" Latvian label by ``renderOverviewCards``;
+        # ensure neither the overview API config nor the JS has any
+        # remaining traces of that flow.
+        self.assertNotIn("Pēdējais simulators", self.body)
+        self.assertNotIn("overview/simulator", self.body)
+
+    def test_overview_keeps_live_status_pill(self):
+        # The pill stays so the overview can still surface a live
+        # connection indicator even after the simulator panel moved out.
+        self.assertIn('data-role="live-status-pill"', self.body)
+
+    def test_overview_does_not_emit_unrendered_template_comments(self):
+        # Django ``{# ... #}`` comments must not leak to the rendered
+        # HTML; if any do, the operator would see internal markers
+        # like "Phase 7, Task 3B" rendered as visible text. The
+        # ``{% comment %}...{% endcomment %}`` block is the safe
+        # multi-line variant and is silently stripped server-side.
+        self.assertNotIn("{#", self.body)
+        self.assertNotIn("Phase 7, Task", self.body)
+
+
+# ── Phase 7, Task 4 — Simulator workspace page (/dashboard/simulator/) ─
+
+
+class SimulatorWorkspacePageTest(_AuthenticatedClientMixin, TestCase):
+    """The dedicated simulator workspace at /dashboard/simulator/."""
+
+    URL = "/dashboard/simulator/"
+
+    def setUp(self):
+        super().setUp()
+        self.response = self.client.get(self.URL)
+        self.body = self.response.content.decode("utf-8")
+
+    def test_returns_200(self):
+        self.assertEqual(self.response.status_code, 200)
+
+    def test_uses_expected_template(self):
+        templates = [t.name for t in self.response.templates if t.name]
+        self.assertIn("dashboard/simulator.html", templates)
+        self.assertIn("dashboard/base.html", templates)
+
+    def test_anonymous_redirects_to_login(self):
+        self.client.logout()
+        resp = self.client.get(self.URL)
+        self.assertEqual(resp.status_code, 302)
+
+    def test_route_name_resolves(self):
+        from django.urls import reverse
+        self.assertEqual(reverse("dashboard:simulator"), self.URL)
+
+    def test_page_renders_status_control_panel(self):
+        self.assertIn('data-role="simulator-control"', self.body)
+        self.assertIn('data-role="simulator-start-btn"', self.body)
+        self.assertIn('data-role="simulator-stop-btn"', self.body)
+        self.assertIn('data-role="simulator-run-once-btn"', self.body)
+        self.assertIn("Sākt", self.body)
+        self.assertIn("Apturēt", self.body)
+        self.assertIn("Palaist vienu reizi", self.body)
+
+    def test_page_renders_profile_editor(self):
+        self.assertIn('data-role="profile-editor"', self.body)
+        self.assertIn('data-role="profile-select"', self.body)
+        self.assertIn('data-role="profile-name"', self.body)
+        self.assertIn('data-role="profile-code"', self.body)
+        self.assertIn('data-role="profile-interval"', self.body)
+        self.assertIn('data-role="profile-metrics-body"', self.body)
+        self.assertIn('data-role="profile-save-btn"', self.body)
+
+    def test_page_renders_chart_container(self):
+        self.assertIn('data-role="simulator-charts"', self.body)
+
+    def test_page_renders_mqtt_stream_table(self):
+        self.assertIn('data-role="mqtt-stream-body"', self.body)
+        self.assertIn("MQTT ziņojumu plūsma", self.body)
+
+    def test_page_renders_permission_notice(self):
+        self.assertIn('data-role="simulator-permission-notice"', self.body)
+
+
+class SimulatorWorkspaceConfigTest(_AuthenticatedClientMixin, TestCase):
+    """The simulator-config JSON block must carry every endpoint + flag."""
+
+    def setUp(self):
+        super().setUp()
+        self.response = self.client.get("/dashboard/simulator/")
+        self.cfg = _read_dashboard_config(
+            self.response.content.decode("utf-8"), "simulator-config",
+        )
+
+    def test_endpoints_present(self):
+        for key in (
+            "simulatorStatus", "simulatorStart",
+            "simulatorStop", "simulatorRunOnce",
+            "profileList", "profileDetailTemplate",
+        ):
+            self.assertIn(key, self.cfg["endpoints"])
+
+    def test_websocket_path(self):
+        self.assertEqual(self.cfg["websocketPath"], "/ws/dashboard/simulator/")
+
+    def test_csrf_token_present(self):
+        self.assertIn("csrfToken", self.cfg)
+        self.assertIsInstance(self.cfg["csrfToken"], str)
+        self.assertGreater(len(self.cfg["csrfToken"]), 0)
+
+    def test_can_control_flag_present(self):
+        self.assertIn("canControlSimulator", self.cfg)
+        # Default operator has no explicit permission.
+        self.assertFalse(self.cfg["canControlSimulator"])
+        self.assertTrue(self.cfg["isAuthenticated"])
+
+    def test_chart_metrics_metadata(self):
+        chart = self.cfg["chartMetrics"]
+        self.assertIsInstance(chart, list)
+        keys = [m["key"] for m in chart]
+        for required in (
+            "temperature_c", "voltage_v", "power_w", "battery_soc_pct",
+        ):
+            self.assertIn(required, keys)
+
+
+class SimulatorWorkspacePermissionTest(TestCase):
+    """Permission gating + per-user can_control flag on the workspace page."""
+
+    PASSWORD = "pw-secret-123!"
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from django.contrib.auth.models import Permission
+
+        User = get_user_model()
+        self.viewer = User.objects.create_user(
+            username="viewer", password=self.PASSWORD,
+        )
+        self.controller = User.objects.create_user(
+            username="controller", password=self.PASSWORD,
+        )
+        perm = Permission.objects.get(
+            content_type__app_label="simulator",
+            codename="can_control_simulator",
+        )
+        self.controller.user_permissions.add(perm)
+
+    def _cfg_for(self, user) -> dict:
+        self.client.force_login(user)
+        resp = self.client.get("/dashboard/simulator/")
+        self.assertEqual(resp.status_code, 200)
+        return _read_dashboard_config(
+            resp.content.decode("utf-8"), "simulator-config",
+        )
+
+    def test_viewer_cannot_control(self):
+        cfg = self._cfg_for(self.viewer)
+        self.assertFalse(cfg["canControlSimulator"])
+
+    def test_controller_can_control(self):
+        cfg = self._cfg_for(self.controller)
+        self.assertTrue(cfg["canControlSimulator"])
+
+    def test_superuser_can_control(self):
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        root = User.objects.create_superuser(
+            username="root", email="root@example.com", password=self.PASSWORD,
+        )
+        cfg = self._cfg_for(root)
+        self.assertTrue(cfg["canControlSimulator"])
+
+
+class AssetDetailWebSocketConfigTest(_AuthenticatedClientMixin, TestCase):
+
+    def test_asset_detail_config_includes_websocket_path(self):
+        resp = self.client.get("/dashboard/assets/charger-001/")
+        cfg = _read_dashboard_config(
+            resp.content.decode("utf-8"), "asset-detail-config",
+        )
+        self.assertEqual(
+            cfg["websocketPath"], "/ws/dashboard/assets/charger-001/",
+        )
+        self.assertGreater(cfg["liveAutoRefreshIntervalSeconds"], 0)
+
+    def test_asset_detail_renders_live_status_pill(self):
+        resp = self.client.get("/dashboard/assets/charger-001/")
+        self.assertContains(resp, 'data-role="live-status-pill"')
+
+    def test_asset_detail_uuid_route_also_carries_websocket_path(self):
+        random_uuid = uuid.uuid4()
+        resp = self.client.get(f"/dashboard/assets/{random_uuid}/")
+        cfg = _read_dashboard_config(
+            resp.content.decode("utf-8"), "asset-detail-config",
+        )
+        self.assertEqual(
+            cfg["websocketPath"],
+            f"/ws/dashboard/assets/{random_uuid}/",
+        )
+
+    def test_asset_detail_chart_metrics_carry_label_and_unit(self):
+        """
+        Phase 7 Task 4 follow-up: the asset detail charts now use the
+        same ``createSimulatorChart`` helper as the simulator workspace,
+        so each chart-metric entry must carry ``key``, ``label``, and
+        ``unit`` instead of being a bare metric key string.
+        """
+        resp = self.client.get("/dashboard/assets/charger-001/")
+        cfg = _read_dashboard_config(
+            resp.content.decode("utf-8"), "asset-detail-config",
+        )
+        chart_metrics = cfg["chartMetrics"]
+        self.assertIsInstance(chart_metrics, list)
+        self.assertGreater(len(chart_metrics), 0)
+        keys = []
+        for entry in chart_metrics:
+            self.assertIsInstance(entry, dict)
+            self.assertIn("key", entry)
+            self.assertIn("label", entry)
+            self.assertIn("unit", entry)
+            keys.append(entry["key"])
+        for required in (
+            "temperature_c", "voltage_v", "power_w", "battery_soc_pct",
+        ):
+            self.assertIn(required, keys)
+        # ``chartMaxPoints`` is also exposed so the JS can size its
+        # rolling buffer the same way as the simulator workspace.
+        self.assertGreater(cfg.get("chartMaxPoints", 0), 0)
+
+
+class AssetDetailScrollableTablesTest(_AuthenticatedClientMixin, TestCase):
+    """The "Pēdējie mērījumi" table must be wrapped in a scroll box."""
+
+    def test_measurements_wrapper_has_scroll_class(self):
+        resp = self.client.get("/dashboard/assets/charger-001/")
+        html = resp.content.decode("utf-8")
+        # Wrapper exists and carries the scroll class.
+        self.assertIn(
+            'class="measurements-scroll" data-role="measurements-wrapper"',
+            html,
+        )
+
+
+class SimulatorWorkspaceScrollableTableTest(_AuthenticatedClientMixin, TestCase):
+    """The MQTT message stream table must be wrapped in a scroll box."""
+
+    def test_mqtt_stream_wrapper_has_scroll_class(self):
+        resp = self.client.get("/dashboard/simulator/")
+        html = resp.content.decode("utf-8")
+        self.assertIn(
+            'class="mqtt-stream-scroll" data-role="mqtt-stream-wrapper"',
+            html,
+        )
+
+
+# ── WebSocket routing + consumers ───────────────────────────────────────────
+
+
+class DashboardWebSocketRoutingTest(TestCase):
+    """The websocket URL patterns must exist and resolve."""
+
+    def test_overview_websocket_route_exists(self):
+        from apps.dashboard.routing import websocket_urlpatterns
+        names = [p.name for p in websocket_urlpatterns]
+        self.assertIn("ws-dashboard-overview", names)
+        self.assertIn("ws-dashboard-asset-detail", names)
+
+    def test_simulator_websocket_route_exists(self):
+        # Phase 7, Task 4 — dedicated /ws/dashboard/simulator/ route.
+        from apps.dashboard.routing import websocket_urlpatterns
+        names = [p.name for p in websocket_urlpatterns]
+        self.assertIn("ws-dashboard-simulator", names)
+
+
+class DashboardConsumerTest(TestCase):
+    """
+    Tests the Channels consumers using ``WebsocketCommunicator``. The
+    test settings configure an in-memory channel layer so no Redis is
+    required.
+    """
+
+    def test_overview_consumer_accepts_connection_and_sends_ack(self):
+        import asyncio
+        from channels.testing import WebsocketCommunicator
+        from apps.dashboard.consumers import DashboardOverviewConsumer
+
+        async def _run():
+            communicator = WebsocketCommunicator(
+                DashboardOverviewConsumer.as_asgi(), "/ws/dashboard/",
+            )
+            connected, _ = await communicator.connect()
+            self.assertTrue(connected)
+            ack = await communicator.receive_json_from()
+            self.assertEqual(ack["event_type"], "connection_ack")
+            self.assertEqual(ack["page"], "overview")
+            await communicator.disconnect()
+
+        asyncio.run(_run())
+
+    def test_asset_detail_consumer_accepts_connection_and_sends_ack(self):
+        import asyncio
+        from channels.testing import WebsocketCommunicator
+        from apps.dashboard.consumers import AssetDetailConsumer
+
+        async def _run():
+            communicator = WebsocketCommunicator(
+                AssetDetailConsumer.as_asgi(),
+                "/ws/dashboard/assets/charger-001/",
+            )
+            # WebsocketCommunicator does not parse path kwargs by itself;
+            # set them explicitly so the consumer can read the asset id.
+            communicator.scope["url_route"] = {
+                "kwargs": {"asset_identifier": "charger-001"},
+            }
+            connected, _ = await communicator.connect()
+            self.assertTrue(connected)
+            ack = await communicator.receive_json_from()
+            self.assertEqual(ack["event_type"], "connection_ack")
+            self.assertEqual(ack["page"], "asset-detail")
+            self.assertEqual(ack["asset_identifier"], "charger-001")
+            await communicator.disconnect()
+
+        asyncio.run(_run())
+
+    def test_overview_consumer_forwards_group_event_to_browser(self):
+        """A live-update broadcast reaches subscribers as a JSON message."""
+        import asyncio
+        from channels.testing import WebsocketCommunicator
+        from apps.dashboard.consumers import DashboardOverviewConsumer
+        from apps.dashboard import live_updates
+
+        async def _run():
+            communicator = WebsocketCommunicator(
+                DashboardOverviewConsumer.as_asgi(), "/ws/dashboard/",
+            )
+            connected, _ = await communicator.connect()
+            self.assertTrue(connected)
+            # Drain the connection_ack first.
+            await communicator.receive_json_from()
+
+            # Publishing must be safe to call from sync code; channel
+            # layer is set to InMemoryChannelLayer in test settings.
+            from asgiref.sync import sync_to_async
+            await sync_to_async(live_updates.publish_simulator_status_changed)(
+                scenario=None,
+                status="started",
+                is_active=True,
+                last_run_at=None,
+                generated_messages=0,
+                message="started",
+            )
+
+            event = await communicator.receive_json_from()
+            self.assertEqual(event["event_type"], "simulator_status_changed")
+            await communicator.disconnect()
+
+        asyncio.run(_run())
+
+    def test_simulator_consumer_accepts_connection_and_sends_ack(self):
+        """Phase 7, Task 4 — /ws/dashboard/simulator/ accepts."""
+        import asyncio
+        from channels.testing import WebsocketCommunicator
+        from apps.dashboard.consumers import SimulatorWorkspaceConsumer
+
+        async def _run():
+            communicator = WebsocketCommunicator(
+                SimulatorWorkspaceConsumer.as_asgi(),
+                "/ws/dashboard/simulator/",
+            )
+            connected, _ = await communicator.connect()
+            self.assertTrue(connected)
+            ack = await communicator.receive_json_from()
+            self.assertEqual(ack["event_type"], "connection_ack")
+            self.assertEqual(ack["page"], "simulator")
+            self.assertIn("dashboard.simulator", ack["groups"])
+            await communicator.disconnect()
+
+        asyncio.run(_run())
+
+    def test_simulator_consumer_forwards_mqtt_message_event(self):
+        """The simulator consumer must receive the dedicated MQTT event."""
+        import asyncio
+        from channels.testing import WebsocketCommunicator
+        from apps.dashboard.consumers import SimulatorWorkspaceConsumer
+        from apps.dashboard import live_updates
+
+        async def _run():
+            communicator = WebsocketCommunicator(
+                SimulatorWorkspaceConsumer.as_asgi(),
+                "/ws/dashboard/simulator/",
+            )
+            connected, _ = await communicator.connect()
+            self.assertTrue(connected)
+            await communicator.receive_json_from()  # ack
+
+            from asgiref.sync import sync_to_async
+            await sync_to_async(live_updates.publish_simulator_mqtt_message)(
+                scenario=None, device=None, asset=None,
+                topic="smt/dev/site/asset/dev-1/telemetry",
+                payload_dict={
+                    "message_id": "abc",
+                    "metrics": {"temperature_c": 25.5, "voltage_v": 12.3},
+                },
+                publish_status="ok",
+            )
+            event = await communicator.receive_json_from()
+            self.assertEqual(event["event_type"], "simulator_mqtt_message_sent")
+            self.assertEqual(event["topic"], "smt/dev/site/asset/dev-1/telemetry")
+            self.assertEqual(event["publish_status"], "ok")
+            self.assertIn("temperature_c", event["metrics"])
+            await communicator.disconnect()
+
+        asyncio.run(_run())
+
+
+# ── Live update publisher best-effort behaviour ─────────────────────────────
+
+
+class LiveUpdatePublisherTest(TestCase):
+
+    def test_publish_event_swallows_channel_layer_failure(self):
+        """A broken channel layer must not raise back into business code."""
+        from apps.dashboard import live_updates
+
+        class _Boom:
+            def __getattr__(self, name):
+                raise RuntimeError("channel layer is down")
+
+        with patch(
+            "apps.dashboard.live_updates.get_channel_layer",
+            return_value=_Boom(),
+            create=True,
+        ):
+            try:
+                live_updates.publish_event(
+                    "simulator_status_changed", payload={"x": 1},
+                )
+            except Exception as exc:  # pragma: no cover
+                self.fail(f"publish_event raised: {exc}")
+
+    def test_publish_event_when_channels_missing_does_not_raise(self):
+        """Even when ``channels`` cannot be imported the helper is silent."""
+        from apps.dashboard import live_updates
+
+        # Replace the channel layer accessor with one that returns None
+        # (i.e. ``CHANNEL_LAYERS`` not configured).
+        with patch(
+            "apps.dashboard.live_updates.get_channel_layer",
+            return_value=None,
+            create=True,
+        ):
+            try:
+                live_updates.publish_event(
+                    "telemetry_received",
+                    payload={"asset_code": "x"},
+                )
+            except Exception as exc:  # pragma: no cover
+                self.fail(f"publish_event raised: {exc}")
+
+    def test_safe_group_segment_sanitises_unsafe_chars(self):
+        from apps.dashboard.live_updates import _safe_group_segment
+        self.assertEqual(_safe_group_segment("charger-001"), "charger-001")
+        self.assertEqual(
+            _safe_group_segment("a/b c?d"), "a_b_c_d",
+        )
+
+    def test_publish_simulator_status_changed_uses_overview_group(self):
+        """Verify that simulator events fan out to the overview group."""
+        from apps.dashboard import live_updates
+
+        captured: list[tuple[str, dict]] = []
+
+        def _capture(groups, message):
+            for g in groups:
+                captured.append((g, message))
+
+        with patch(
+            "apps.dashboard.live_updates._send_to_groups",
+            side_effect=_capture,
+        ):
+            live_updates.publish_simulator_status_changed(
+                scenario=None, status="started", is_active=True,
+                message="ok",
+            )
+        groups_used = [g for g, _ in captured]
+        self.assertIn(live_updates.OVERVIEW_GROUP, groups_used)
+
+    def test_publish_telemetry_received_addresses_asset_groups(self):
+        """Asset-bound events fan out to BOTH the UUID and code groups."""
+        from apps.dashboard import live_updates
+
+        captured: list[str] = []
+
+        def _capture(groups, message):
+            captured.extend(groups)
+
+        class _StubAsset:
+            id = "abcd-1234"
+            code = "charger-001"
+
+        with patch(
+            "apps.dashboard.live_updates._send_to_groups",
+            side_effect=_capture,
+        ):
+            live_updates.publish_telemetry_received(
+                asset=_StubAsset(),
+                device=None,
+                raw_message=None,
+                measurements_count=2,
+            )
+        self.assertIn(live_updates.OVERVIEW_GROUP, captured)
+        self.assertIn(
+            live_updates.ASSET_GROUP_PREFIX + "abcd-1234", captured,
+        )
+        self.assertIn(
+            live_updates.ASSET_GROUP_PREFIX + "charger-001", captured,
+        )

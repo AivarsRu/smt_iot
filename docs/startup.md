@@ -186,30 +186,52 @@ exit()
 
 ## 11. Simulatora palaišana
 
-Ja projektā ir izveidota simulatora management command komanda `run_simulator`, vienreizēju simulatora izpildi var palaist šādi:
+`docker-compose.local.yml` iekļauj atsevišķu **`simulator`** servisu,
+kas palaiž `python manage.py run_simulator` ilgi darbojošā režīmā ar
+Bash retry-cilpu (`--duration-seconds 86400 --sleep-seconds 5`). Šis
+serviss godina `SimulatorScenario.is_active` — t.i., dashboarda pogas
+**Sākt** un **Apturēt** uz `/dashboard/simulator/` reāli pārslēdz, vai
+emisija notiek, **bez konteinera restarta**.
+
+Lai palaistu servisu:
+
+```bash
+docker compose -f docker-compose.local.yml up -d simulator
+```
+
+Lai sekotu logiem:
+
+```bash
+docker compose -f docker-compose.local.yml logs -f simulator
+```
+
+Lai apturētu emisiju (lietotāja pusē — caur dashboardu):
+ielogojies un nospied **Apturēt** lapā `/dashboard/simulator/`. Bez
+konteinera restarta nākamais cikls tiks izlaists, līdz nospiedīs
+**Sākt**.
+
+Lai pilnībā apturētu konteineri:
+
+```bash
+docker compose -f docker-compose.local.yml stop simulator
+```
+
+### Vienreizēja izpilde (manuāli)
+
+Vienreizēju simulatora izpildi var palaist arī tieši:
 
 ```bash
 docker compose -f docker-compose.local.yml exec web python manage.py run_simulator --scenario default_demo --once
 ```
 
-Šī komanda ir paredzēta, lai publicētu vienu simulatora datu soli MQTT brokerī. Pēc tam MQTT worker vajadzētu šo ziņojumu apstrādāt un saglabāt datubāzē.
+Šī komanda publicē vienu datu soli MQTT brokerī. Pēc tam MQTT worker
+to apstrādā un saglabā datubāzē.
 
-Ja nepieciešams palaist simulatoru ilgākai demonstrācijai, var izmantot:
-
-```bash
-docker compose -f docker-compose.local.yml exec web python manage.py run_simulator --scenario default_demo --duration-minutes 60
-```
-
-Ja Compose failā simulatoram ir atsevišķs serviss, piemēram, `simulator_cron_job`, to var palaist šādi:
+Ja nepieciešams palaist simulatoru ilgākai demonstrācijai bez
+`docker-compose` servisa, var izmantot:
 
 ```bash
-docker compose -f docker-compose.local.yml up -d simulator_cron_job
-```
-
-Tā logus var skatīties ar:
-
-```bash
-docker compose -f docker-compose.local.yml logs -f simulator_cron_job
+docker compose -f docker-compose.local.yml exec web python manage.py run_simulator --scenario default_demo --duration-seconds 600 --sleep-seconds 5
 ```
 
 ## 12. MQTT worker palaišana

@@ -815,7 +815,13 @@ class RunSimulatorRepeatedModeTest(TestCase):
         # deadline = 0 + 5 = 5; post-cycle check returns 100 → break after 1 cycle.
         mock_monotonic.side_effect = [0.0, 100.0]
         stub = _StubPublish()
-        with patch("apps.simulator.management.commands.run_simulator.publish_message", stub):
+        # NOTE: ``live_updates.publish_simulator_mqtt_message`` is mocked
+        # because the real implementation would call into
+        # ``asgiref.async_to_sync`` which internally invokes
+        # ``time.monotonic`` and would exhaust the side-effect list above.
+        with patch("apps.simulator.management.commands.run_simulator.publish_message", stub), \
+             patch("apps.simulator.management.commands.run_simulator.live_updates."
+                   "publish_simulator_mqtt_message"):
             call_command(
                 "run_simulator", scenario="default_demo",
                 duration_seconds=5, sleep_seconds=1, verbosity=0,
@@ -834,7 +840,9 @@ class RunSimulatorRepeatedModeTest(TestCase):
         # post-sleep-check 2, cycle 3, post-check 100 → break (3 cycles).
         mock_monotonic.side_effect = [0.0, 1.0, 1.0, 2.0, 2.0, 100.0]
         stub = _StubPublish()
-        with patch("apps.simulator.management.commands.run_simulator.publish_message", stub):
+        with patch("apps.simulator.management.commands.run_simulator.publish_message", stub), \
+             patch("apps.simulator.management.commands.run_simulator.live_updates."
+                   "publish_simulator_mqtt_message"):
             call_command(
                 "run_simulator", scenario="default_demo",
                 duration_seconds=10, sleep_seconds=1, verbosity=0,
@@ -1029,6 +1037,216 @@ class RunSimulatorRepeatedModeTest(TestCase):
             )
         self.assertEqual(len(stub.calls), 1)
         self.assertIn("No --once / --iterations / --duration-seconds", out.getvalue())
+
+
+# ── Live update / is_active behaviour (Phase 7 Task 4 follow-up) ──────────────
+
+
+class RunSimulatorLiveUpdateTest(TestCase):
+    """
+    The ``run_simulator`` management command must publish
+    ``simulator_mqtt_message_sent`` live-update events for every cycle so
+    the ``/dashboard/simulator/`` workspace charts and MQTT stream table
+    receive WebSocket updates from the long-running emitter (and not only
+    from the synchronous ``Run once`` API).
+    """
+
+    @override_settings(SMT_ENV="dev")
+    def setUp(self):
+        self.site = _make_site(code="default_demo")
+        self.asset = _make_asset(self.site, code="charger-001", asset_type=AssetType.CHARGER)
+        self.device = _make_device(self.site, self.asset, uid="charger-001")
+        self.scenario = _make_scenario(self.site, code="default_demo")
+        self.scenario.interval_seconds = 5
+        self.scenario.save()
+        self.sd = _make_scenario_device(self.scenario, self.device)
+        self.metric = _make_metric(key="voltage_v")
+        _make_metric_profile(self.sd, self.metric, base_value=52.0)
+
+    @override_settings(SMT_ENV="dev")
+    def test_once_publishes_simulator_mqtt_message_event_with_ok_status(self):
+        stub = _StubPublish()
+        with patch(
+            "apps.simulator.management.commands.run_simulator.publish_message", stub,
+        ), patch(
+            "apps.simulator.management.commands.run_simulator.live_updates."
+            "publish_simulator_mqtt_message",
+        ) as mock_live:
+            call_command("run_simulator", scenario="default_demo", once=True, verbosity=0)
+        self.assertEqual(mock_live.call_count, 1)
+        kwargs = mock_live.call_args.kwargs
+        self.assertEqual(kwargs.get("publish_status"), "ok")
+        self.assertEqual(kwargs.get("topic"), "smt/dev/default_demo/charger/charger-001/telemetry")
+        self.assertEqual(kwargs.get("scenario"), self.scenario)
+
+    @override_settings(SMT_ENV="dev")
+    def test_dry_run_publishes_simulator_mqtt_message_event_with_dry_run_status(self):
+        stub = _StubPublish()
+        with patch(
+            "apps.simulator.management.commands.run_simulator.publish_message", stub,
+        ), patch(
+            "apps.simulator.management.commands.run_simulator.live_updates."
+            "publish_simulator_mqtt_message",
+        ) as mock_live:
+            call_command(
+                "run_simulator", scenario="default_demo", dry_run=True, verbosity=0,
+            )
+        self.assertEqual(mock_live.call_count, 1)
+        self.assertEqual(mock_live.call_args.kwargs.get("publish_status"), "dry_run")
+
+    @override_settings(SMT_ENV="dev")
+    def test_publish_failure_emits_failed_live_event(self):
+        def _boom(topic, payload, **kwargs):
+            raise RuntimeError("MQTT connection refused")
+
+        from django.core.management.base import CommandError
+        with patch(
+            "apps.simulator.management.commands.run_simulator.publish_message", _boom,
+        ), patch(
+            "apps.simulator.management.commands.run_simulator.live_updates."
+            "publish_simulator_mqtt_message",
+        ) as mock_live:
+            with self.assertRaises(CommandError):
+                call_command(
+                    "run_simulator", scenario="default_demo", once=True, verbosity=0,
+                )
+        self.assertEqual(mock_live.call_count, 1)
+        kwargs = mock_live.call_args.kwargs
+        self.assertEqual(kwargs.get("publish_status"), "failed")
+        self.assertIn("MQTT connection refused", kwargs.get("error", ""))
+
+    @override_settings(SMT_ENV="dev")
+    def test_iterations_publishes_one_live_event_per_cycle(self):
+        stub = _StubPublish()
+        with patch(
+            "apps.simulator.management.commands.run_simulator.publish_message", stub,
+        ), patch(
+            "apps.simulator.management.commands.run_simulator.time.sleep",
+        ), patch(
+            "apps.simulator.management.commands.run_simulator.live_updates."
+            "publish_simulator_mqtt_message",
+        ) as mock_live:
+            call_command(
+                "run_simulator", scenario="default_demo",
+                iterations=3, sleep_seconds=0, verbosity=0,
+            )
+        self.assertEqual(mock_live.call_count, 3)
+        for call in mock_live.call_args_list:
+            self.assertEqual(call.kwargs.get("publish_status"), "ok")
+
+    @override_settings(SMT_ENV="dev")
+    def test_live_update_failure_does_not_break_the_cycle(self):
+        """A websocket / channel-layer outage must NEVER abort an MQTT publish."""
+        stub = _StubPublish()
+        with patch(
+            "apps.simulator.management.commands.run_simulator.publish_message", stub,
+        ), patch(
+            "apps.simulator.management.commands.run_simulator.live_updates."
+            "publish_simulator_mqtt_message",
+            side_effect=RuntimeError("redis offline"),
+        ):
+            call_command("run_simulator", scenario="default_demo", once=True, verbosity=0)
+        # Publishing went through despite the live-update failure.
+        self.assertEqual(len(stub.calls), 1)
+
+
+class RunSimulatorIsActiveGatingTest(TestCase):
+    """
+    ``--duration-seconds`` mode honors ``SimulatorScenario.is_active`` so
+    the dashboard ``Sākt``/``Apturēt`` buttons actually pause and resume
+    emission for the long-running simulator service without restarting
+    the container.
+    """
+
+    @override_settings(SMT_ENV="dev")
+    def setUp(self):
+        self.site = _make_site(code="default_demo")
+        self.asset = _make_asset(self.site, code="charger-001", asset_type=AssetType.CHARGER)
+        self.device = _make_device(self.site, self.asset, uid="charger-001")
+        self.scenario = _make_scenario(self.site, code="default_demo")
+        self.scenario.interval_seconds = 5
+        self.scenario.save()
+        self.sd = _make_scenario_device(self.scenario, self.device)
+        self.metric = _make_metric(key="voltage_v")
+        _make_metric_profile(self.sd, self.metric, base_value=52.0)
+
+    @override_settings(SMT_ENV="dev")
+    @patch("apps.simulator.management.commands.run_simulator.time.sleep")
+    @patch("apps.simulator.management.commands.run_simulator.time.monotonic")
+    def test_duration_skips_cycles_while_inactive(self, mock_monotonic, mock_sleep):
+        """When ``is_active=False``, the duration loop must run but emit nothing."""
+        # Two ticks: cycle (skipped), post-cycle check sees deadline → break.
+        # Sequence: deadline init (0.0), post-cycle check (100.0).
+        mock_monotonic.side_effect = [0.0, 100.0]
+        # Pre-condition: scenario is paused.
+        self.scenario.is_active = False
+        self.scenario.save(update_fields=["is_active"])
+
+        stub = _StubPublish()
+        with patch(
+            "apps.simulator.management.commands.run_simulator.publish_message", stub,
+        ), patch(
+            "apps.simulator.management.commands.run_simulator.live_updates."
+            "publish_simulator_mqtt_message",
+        ) as mock_live:
+            call_command(
+                "run_simulator", scenario="default_demo",
+                duration_seconds=5, sleep_seconds=1, verbosity=0,
+            )
+        # Loop ran but emitted nothing because is_active=False.
+        self.assertEqual(len(stub.calls), 0)
+        self.assertEqual(mock_live.call_count, 0)
+        # SimulatorRun row still created and marked completed.
+        run = SimulatorRun.objects.filter(scenario=self.scenario).latest("started_at")
+        self.assertEqual(run.status, "completed")
+        self.assertEqual(run.messages_published, 0)
+
+    @override_settings(SMT_ENV="dev")
+    @patch("apps.simulator.management.commands.run_simulator.time.sleep")
+    @patch("apps.simulator.management.commands.run_simulator.time.monotonic")
+    def test_duration_resumes_when_is_active_flips_to_true_mid_loop(
+        self, mock_monotonic, mock_sleep,
+    ):
+        """
+        Simulate the operator pressing "Sākt" between cycles: scenario starts
+        inactive, then a side-effect on ``refresh_from_db`` flips it active
+        before the second iteration.
+        """
+        # Time sequence: deadline init (0.0), iter-1 post-cycle (1.0),
+        # iter-1 post-sleep (2.0), iter-2 post-cycle (100.0) → break.
+        mock_monotonic.side_effect = [0.0, 1.0, 2.0, 100.0]
+        self.scenario.is_active = False
+        self.scenario.save(update_fields=["is_active"])
+
+        from apps.simulator.models import SimulatorScenario
+        original_refresh = SimulatorScenario.refresh_from_db
+        call_count = {"n": 0}
+
+        def fake_refresh(self_obj, *args, **kwargs):
+            call_count["n"] += 1
+            # Flip to active on the SECOND refresh (i.e. before iter 2).
+            if call_count["n"] >= 2:
+                SimulatorScenario.objects.filter(pk=self_obj.pk).update(is_active=True)
+            return original_refresh(self_obj, *args, **kwargs)
+
+        stub = _StubPublish()
+        with patch.object(
+            SimulatorScenario, "refresh_from_db", autospec=True, side_effect=fake_refresh,
+        ), patch(
+            "apps.simulator.management.commands.run_simulator.publish_message", stub,
+        ), patch(
+            "apps.simulator.management.commands.run_simulator.live_updates."
+            "publish_simulator_mqtt_message",
+        ) as mock_live:
+            call_command(
+                "run_simulator", scenario="default_demo",
+                duration_seconds=10, sleep_seconds=1, verbosity=0,
+            )
+        # Iteration 1 was skipped (still inactive at first refresh),
+        # iteration 2 emitted exactly one cycle (now active).
+        self.assertEqual(len(stub.calls), 1)
+        self.assertEqual(mock_live.call_count, 1)
+        self.assertEqual(mock_live.call_args.kwargs.get("publish_status"), "ok")
 
 
 # ── MQTT publisher lifecycle tests ────────────────────────────────────────────
@@ -1293,3 +1511,163 @@ class MqttPublisherTest(TestCase):
         # cleanup still runs
         self.assertTrue(client.loop_stopped)
         self.assertTrue(client.disconnected)
+
+
+# ── Phase 7, Task 3A — Simulator control service ────────────────────────────
+
+
+class SimulatorControlServiceTest(TestCase):
+    """
+    Tests for ``apps.simulator.services.control``. Each test patches
+    ``publish_message`` so paho is never imported and no MQTT broker is
+    required.
+    """
+
+    def setUp(self):
+        self.site = _make_site(code="default_demo")
+        self.asset = _make_asset(self.site, code="charger-001", asset_type=AssetType.CHARGER)
+        self.device = _make_device(self.site, self.asset, uid="charger-001")
+        self.scenario = _make_scenario(self.site, code="default_demo")
+        self.sd = _make_scenario_device(self.scenario, self.device)
+        self.metric = _make_metric(key="voltage_v")
+        _make_metric_profile(self.sd, self.metric, base_value=52.0)
+
+    # ── Status ─────────────────────────────────────────────────────
+
+    def test_status_returns_stable_keys(self):
+        from apps.simulator.services.control import get_simulator_status
+        result = get_simulator_status()
+        for key in (
+            "ok", "status", "message", "scenario", "last_run_at",
+            "is_active", "generated_messages", "errors", "_http_status",
+        ):
+            self.assertIn(key, result, f"Missing key: {key}")
+
+    def test_status_describes_default_scenario(self):
+        from apps.simulator.services.control import get_simulator_status
+        result = get_simulator_status()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["scenario"]["code"], "default_demo")
+        self.assertEqual(result["_http_status"], 200)
+
+    def test_status_when_no_scenario_returns_404(self):
+        from apps.simulator.services.control import get_simulator_status
+        SimulatorScenario.objects.all().delete()
+        result = get_simulator_status()
+        self.assertFalse(result["ok"])
+        self.assertIsNone(result["scenario"])
+        self.assertEqual(result["_http_status"], 404)
+        self.assertIn("scenār", result["message"].lower())
+
+    # ── Start ──────────────────────────────────────────────────────
+
+    def test_start_activates_scenario(self):
+        from apps.simulator.services.control import start_simulator
+        self.scenario.is_active = False
+        self.scenario.save(update_fields=["is_active", "updated_at"])
+        result = start_simulator()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "started")
+        self.assertTrue(result["is_active"])
+        self.scenario.refresh_from_db()
+        self.assertTrue(self.scenario.is_active)
+
+    def test_start_is_idempotent_when_already_active(self):
+        from apps.simulator.services.control import start_simulator
+        self.assertTrue(self.scenario.is_active)
+        result = start_simulator()
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["is_active"])
+
+    def test_start_without_scenario_returns_404(self):
+        from apps.simulator.services.control import start_simulator
+        SimulatorScenario.objects.all().delete()
+        result = start_simulator()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["_http_status"], 404)
+
+    # ── Stop ───────────────────────────────────────────────────────
+
+    def test_stop_deactivates_scenario(self):
+        from apps.simulator.services.control import stop_simulator
+        self.scenario.is_active = True
+        self.scenario.save(update_fields=["is_active", "updated_at"])
+        result = stop_simulator()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "stopped")
+        self.assertFalse(result["is_active"])
+        self.scenario.refresh_from_db()
+        self.assertFalse(self.scenario.is_active)
+
+    def test_stop_when_no_scenario_returns_404(self):
+        from apps.simulator.services.control import stop_simulator
+        SimulatorScenario.objects.all().delete()
+        result = stop_simulator()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["_http_status"], 404)
+
+    # ── Run-once ───────────────────────────────────────────────────
+
+    @override_settings(SMT_ENV="dev")
+    def test_run_once_publishes_one_message(self):
+        from apps.simulator.services import control
+        stub = _StubPublish()
+        with patch(
+            "apps.simulator.services.mqtt_publisher.publish_message", stub,
+        ):
+            result = control.run_simulator_once()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "ran_once")
+        self.assertEqual(result["generated_messages"], 1)
+        self.assertEqual(len(stub.calls), 1)
+        topic, _ = stub.calls[0]
+        self.assertEqual(topic, "smt/dev/default_demo/charger/charger-001/telemetry")
+
+    @override_settings(SMT_ENV="dev")
+    def test_run_once_records_simulator_run(self):
+        from apps.simulator.services import control
+        stub = _StubPublish()
+        with patch(
+            "apps.simulator.services.mqtt_publisher.publish_message", stub,
+        ):
+            control.run_simulator_once()
+        run = (
+            SimulatorRun.objects
+            .filter(scenario=self.scenario)
+            .latest("started_at")
+        )
+        self.assertEqual(run.status, "completed")
+        self.assertEqual(run.messages_published, 1)
+        self.assertIsNotNone(run.finished_at)
+        self.scenario.refresh_from_db()
+        self.assertIsNotNone(self.scenario.last_run_at)
+
+    @override_settings(SMT_ENV="dev")
+    def test_run_once_dry_run_does_not_publish(self):
+        from apps.simulator.services import control
+        stub = _StubPublish()
+        with patch(
+            "apps.simulator.services.mqtt_publisher.publish_message", stub,
+        ):
+            result = control.run_simulator_once(dry_run=True)
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(stub.calls), 0)
+
+    @override_settings(SMT_ENV="dev")
+    def test_run_once_records_failure_when_publish_raises(self):
+        from apps.simulator.services import control
+
+        def _boom(topic, payload, **kwargs):
+            raise RuntimeError("MQTT down")
+
+        with patch(
+            "apps.simulator.services.mqtt_publisher.publish_message", _boom,
+        ):
+            result = control.run_simulator_once()
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "ran_once")
+        self.assertTrue(result["errors"])
+        run = SimulatorRun.objects.filter(scenario=self.scenario).latest("started_at")
+        self.assertEqual(run.status, "failed")
+        self.assertEqual(run.messages_published, 0)

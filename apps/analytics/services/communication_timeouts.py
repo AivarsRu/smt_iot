@@ -322,7 +322,7 @@ def _create_open_timeout(device, *, now, last_seen_at, timeout_seconds: float):
         device, last_seen_at=last_seen_at,
         timeout_seconds=timeout_seconds, checked_at=now,
     )
-    Event.objects.create(
+    event = Event.objects.create(
         event_type=EventType.COMMUNICATION_TIMEOUT,
         severity=Severity.WARNING,
         status=EventStatus.OPEN,
@@ -335,6 +335,16 @@ def _create_open_timeout(device, *, now, last_seen_at, timeout_seconds: float):
         payload=payload,
         detected_at=now,
     )
+    _best_effort_publish_anomaly(event)
+
+
+def _best_effort_publish_anomaly(event) -> None:
+    """Fan out a new communication-timeout event to the dashboard."""
+    try:
+        from apps.dashboard import live_updates
+        live_updates.publish_anomaly_created(event=event)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Anomaly live update skipped: %s", exc)
 
 
 def _update_open_timeout(event, device, *, now, last_seen_at, timeout_seconds: float):

@@ -1,0 +1,211 @@
+{% extends "dashboard/base.html" %}
+{% load static %}
+
+{% block title %}Simulators — SMT Digital Solution{% endblock %}
+
+{% block content %}
+  <section class="dashboard-section" aria-labelledby="simulator-page-heading">
+    <div class="section-header">
+      <h2 id="simulator-page-heading" class="section-header__title">Simulators</h2>
+      <p class="section-header__hint">
+        Šī sadaļa ir paredzēta testa datu ģenerēšanai un datu plūsmas pārbaudei.
+      </p>
+    </div>
+  </section>
+
+  {# ── Status + control panel ─────────────────────────────────────────── #}
+  <section class="dashboard-section" aria-labelledby="simulator-status-heading">
+    <div class="section-header">
+      <h2 id="simulator-status-heading" class="section-header__title">Statuss un vadība</h2>
+      <p class="section-header__hint">
+        Vadība: <code>/api/simulator/{status,start,stop,run-once}/</code>.
+      </p>
+    </div>
+
+    <div class="simulator-control" data-role="simulator-control">
+      <div class="simulator-control__header">
+        <h3 class="subsection-title" data-role="simulator-scenario-title">
+          Simulatora vadība
+        </h3>
+        <span class="status-pill" data-role="simulator-state-pill">…</span>
+      </div>
+      <p class="simulator-control__message"
+         data-role="simulator-message">Ielādē statusu…</p>
+      <dl class="simulator-control__meta">
+        <dt>Profils</dt>
+        <dd data-role="simulator-scenario-code">—</dd>
+        <dt>Pēdējais palaidiens</dt>
+        <dd data-role="simulator-last-run">—</dd>
+        <dt>Ziņojumi pēdējā ciklā</dt>
+        <dd data-role="simulator-generated">—</dd>
+        <dt>Tiešraides statuss</dt>
+        <dd>
+          <span class="status-pill" data-role="live-status-pill">…</span>
+        </dd>
+      </dl>
+      <div class="simulator-control__actions" data-role="simulator-actions">
+        <button type="button" class="btn btn--primary"
+                data-role="simulator-start-btn"
+                data-action="start">Sākt</button>
+        <button type="button" class="btn"
+                data-role="simulator-stop-btn"
+                data-action="stop">Apturēt</button>
+        <button type="button" class="btn btn--secondary"
+                data-role="simulator-run-once-btn"
+                data-action="run-once">Palaist vienu reizi</button>
+      </div>
+      <p class="simulator-control__permission"
+         data-role="simulator-permission-notice" hidden></p>
+      <div class="simulator-control__feedback"
+           data-role="simulator-feedback" hidden></div>
+    </div>
+  </section>
+
+  {# ── Profile selection + editor ─────────────────────────────────────── #}
+  <section class="dashboard-section" aria-labelledby="simulator-profile-heading">
+    <div class="section-header">
+      <h2 id="simulator-profile-heading" class="section-header__title">Profils</h2>
+      <p class="section-header__hint">
+        Izvēlieties profilu vai izveidojiet jaunu, lai mainītu metrikas un
+        signāla biežumu.
+      </p>
+    </div>
+
+    <div class="profile-editor" data-role="profile-editor">
+      <div class="profile-editor__top">
+        <label class="profile-editor__field">
+          <span>Aktīvais profils</span>
+          <select data-role="profile-select"
+                  aria-label="Izvēlēties simulatora profilu"></select>
+        </label>
+        <button type="button" class="btn"
+                data-role="profile-new-btn">Jauns profils</button>
+      </div>
+
+      <div class="profile-editor__form" data-role="profile-form">
+        <div class="profile-editor__grid">
+          <label class="profile-editor__field">
+            <span>Profila nosaukums</span>
+            <input type="text" data-role="profile-name" maxlength="255">
+          </label>
+          <label class="profile-editor__field">
+            <span>Profila kods</span>
+            <input type="text" data-role="profile-code" maxlength="64">
+          </label>
+          <label class="profile-editor__field">
+            <span>Vietas kods</span>
+            <input type="text" data-role="profile-site-code" maxlength="64">
+          </label>
+          <label class="profile-editor__field">
+            <span>Signāla intervāls (sekundes)</span>
+            <input type="number" data-role="profile-interval"
+                   min="1" step="1" inputmode="numeric">
+          </label>
+        </div>
+
+        <h3 class="subsection-title">Metrikas</h3>
+        <div class="profile-editor__metrics">
+          <table class="data-table profile-editor__metrics-table"
+                 data-role="profile-metrics-table">
+            <thead>
+              <tr>
+                <th>Iesp.</th>
+                <th>Atslēga</th>
+                <th>Etiķete</th>
+                <th>Mērvienība</th>
+                <th>Min</th>
+                <th>Bāze</th>
+                <th>Max</th>
+                <th>Troksnis</th>
+              </tr>
+            </thead>
+            <tbody data-role="profile-metrics-body">
+              <tr>
+                <td colspan="8" class="state state--empty">
+                  Izvēlieties profilu, lai redzētu metrikas.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="profile-editor__hint" data-role="profile-metrics-hint">
+            Saraksts ir veidots no profilam piesaistītajām <code>SimulatorMetricProfile</code>
+            ierakstu rindām. Lai pievienotu jaunu metriku, izveidojiet sensoru
+            atbilstošajai ierīcei.
+          </p>
+        </div>
+
+        <div class="profile-editor__actions">
+          <button type="button" class="btn btn--primary"
+                  data-role="profile-save-btn">Saglabāt profilu</button>
+          <button type="button" class="btn"
+                  data-role="profile-reset-btn">Atcelt izmaiņas</button>
+        </div>
+
+        <div class="profile-editor__feedback"
+             data-role="profile-feedback" hidden></div>
+      </div>
+    </div>
+  </section>
+
+  {# ── Live charts (one per metric) ───────────────────────────────────── #}
+  <section class="dashboard-section" aria-labelledby="simulator-charts-heading">
+    <div class="section-header">
+      <h2 id="simulator-charts-heading" class="section-header__title">
+        Tiešraides grafiki
+      </h2>
+      <p class="section-header__hint">
+        Punkti tiek pievienoti reālajā laikā no WebSocket plūsmas.
+        Izvelciet x-asi, lai tuvinātu; izmantojiet pogu „Atiestatīt skatu”.
+      </p>
+    </div>
+    <div class="chart-grid" data-role="simulator-charts">
+      <div class="state state--empty" data-role="simulator-charts-state">
+        Vēl nav datu. Palaidiet simulatoru, lai sāktu rādīt grafikus.
+      </div>
+    </div>
+  </section>
+
+  {# ── MQTT message stream table ──────────────────────────────────────── #}
+  <section class="dashboard-section" aria-labelledby="simulator-mqtt-heading">
+    <div class="section-header">
+      <h2 id="simulator-mqtt-heading" class="section-header__title">
+        MQTT ziņojumu plūsma
+      </h2>
+      <p class="section-header__hint">
+        Tabula tiek atjaunināta tiešraidē. Tiek rādītas pēdējās rindas;
+        vecākie ieraksti tiek noņemti.
+      </p>
+    </div>
+    <div class="mqtt-stream-scroll" data-role="mqtt-stream-wrapper">
+      <table class="data-table mqtt-stream-table">
+        <thead>
+          <tr>
+            <th>Laiks</th>
+            <th>Profils</th>
+            <th>Ierīce / aktīvs</th>
+            <th>Tēma</th>
+            <th>Metrikas</th>
+            <th>Saturs</th>
+            <th>Statuss</th>
+            <th>Kļūda</th>
+          </tr>
+        </thead>
+        <tbody data-role="mqtt-stream-body">
+          <tr data-role="mqtt-stream-empty">
+            <td colspan="8" class="state state--empty">
+              Vēl nav ziņojumu. Palaidiet simulatoru, lai redzētu plūsmu.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+{% endblock %}
+
+{% block dashboard_config %}
+  {{ simulator_config|json_script:"simulator-config" }}
+{% endblock %}
+
+{% block extra_scripts %}
+  <script src="{% static 'dashboard/dashboard.js' %}" defer></script>
+{% endblock %}

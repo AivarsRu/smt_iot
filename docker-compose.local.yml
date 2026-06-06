@@ -32,5 +32,32 @@ services:
     ports:
       - "127.0.0.1:1883:1883"
 
+  # Long-running simulator emitter for the /dashboard/simulator/
+  # workspace. The actual cycle cadence is governed by the simulator
+  # scenario's ``interval_seconds`` and the ``Sākt``/``Apturēt`` buttons
+  # only flip ``is_active`` — this service inspects that flag every
+  # cycle, so toggling Sākt/Apturēt in the UI pauses or resumes
+  # emission live without restarting the container. ``--sleep-seconds 5``
+  # gives the duration loop a 5 s tick; the runner will emit on every
+  # tick where ``is_active=True`` and silently skip ticks where it is
+  # ``False``. We use ``--duration-seconds`` (max int32) plus a Bash
+  # outer loop so the service self-heals after process exit / DB drops.
+  simulator:
+    build:
+      context: .
+    container_name: smt_simulator_local
+    command:
+      - bash
+      - -c
+      - "while true; do python manage.py run_simulator --scenario default_demo --duration-seconds 86400 --sleep-seconds 5 || sleep 5; done"
+    env_file:
+      - .env.local
+    volumes:
+      - .:/app
+    depends_on:
+      - redis
+      - mqtt
+      - web
+
 volumes:
   smt_pgdata_local:

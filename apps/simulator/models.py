@@ -22,6 +22,14 @@ class SimulatorScenario(BaseModel):
         verbose_name = "Simulator Scenario"
         verbose_name_plural = "Simulator Scenarios"
         ordering = ["code"]
+        # Phase 7, Task 3B: minimal Django permission used by the
+        # simulator control endpoints (start / stop / run-once).
+        # Assignment is done via Django admin or via Django shell;
+        # see ``docs/simulator_usage.md`` for examples. Superusers
+        # always pass the check regardless of group membership.
+        permissions = [
+            ("can_control_simulator", "Var vadīt simulatoru"),
+        ]
 
     def __str__(self) -> str:
         return f"{self.code} — {self.name}"

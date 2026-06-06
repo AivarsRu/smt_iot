@@ -32,6 +32,31 @@ services:
       - "1883"
     restart: unless-stopped
 
+  # Long-running simulator emitter. Runs ``run_simulator`` in
+  # ``--duration-seconds`` mode wrapped in a Bash retry loop so the
+  # process self-heals after database / broker hiccups. The runner
+  # honors ``SimulatorScenario.is_active`` between cycles, so the
+  # ``Sākt``/``Apturēt`` buttons on the dashboard pause/resume
+  # emission live without a container restart. Disable this service
+  # in environments where the simulator must never run (production
+  # with real devices) by overriding ``SMT_SIMULATOR_SCENARIO`` or
+  # commenting the block below.
+  simulator:
+    build:
+      context: .
+    container_name: smt_simulator_prod
+    command:
+      - bash
+      - -c
+      - "while true; do python manage.py run_simulator --scenario default_demo --duration-seconds 86400 --sleep-seconds 5 || sleep 5; done"
+    env_file:
+      - .env.prod
+    depends_on:
+      - redis
+      - mqtt
+      - web
+    restart: unless-stopped
+
   nginx:
     image: nginx:1.27-alpine
     container_name: smt_nginx_prod

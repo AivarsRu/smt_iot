@@ -159,8 +159,8 @@ Vienā no diviem veidiem:
 
 - **Aktīva identitāte** — kods, nosaukums, vieta, tips, statusa žetons, pēdējoreiz redzēts, pēdējais mērījums, aktīvas anomālijas;
 - **Digitālais dvīnis (state cards)** — temperatūra, spriegums, strāva, jauda, baterija (SoC %), anomāliju skaits, vai šobrīd ir aktīva anomālija;
-- **Mērījumu diagrammas** — vienkāršas inline SVG līniju diagrammas četrām metrikām: `temperature_c`, `voltage_v`, `power_w`, `battery_soc_pct`. Katra diagramma rāda pēdējos līdz 100 mērījumus, jaunāko vērtību ar laiku, un min/max diapazonu apakšā;
-- **Pēdējie mērījumi** — tabula ar metriku, **sensoru** (`sensor_code`), vērtību, vienību, laiku, kvalitāti;
+- **Mērījumu diagrammas** — interaktīvas SVG līniju diagrammas četrām metrikām: `temperature_c`, `voltage_v`, `power_w`, `battery_soc_pct`. Phase 7 Task 4 turpinājumā tās tiek zīmētas ar to pašu `createSimulatorChart` palīgu kā simulatoru darba lapa, tāpēc katrai diagrammai ir Latvian virsraksts ar mērvienību, marķētas asis (X = `Laiks`, Y = `<Etiķete> (<Mērvienība>)`), tooltip, drag-to-zoom uz X ass, dubultklikšķis vai poga **Atiestatīt skatu**, lai atjaunotu pilnu skatu. Katra diagramma rāda līdz 100 mērījumiem un nezaudē zoom stāvokli starp atsvaidzinājumiem;
+- **Pēdējie mērījumi** — tabula ar metriku, **sensoru** (`sensor_code`), vērtību, vienību, laiku, kvalitāti. Tabula tiek ietīta ritināmā kastītē ar fiksētu maksimālo augstumu (`measurements-scroll`), tāpēc lapa nepalielinās bezgalīgi, ja mērījumu skaits ir liels. Tabulas galva ir „lipīga” (sticky), lai kolonnu nosaukumi paliek redzami, ritinot;
 - **Notikumi** — tabula ar tipu, smaguma žetonu, statusa žetonu, virsrakstu, atklāšanas laiku un aizvēršanas laiku;
 - **Pēdējais MQTT ziņojums** — diagnostikas panelis ar `message_id`, `processing_status`, `received_at`, `topic`. Pilns payload netiek atspoguļots — tam kalpo `/api/raw-messages/`.
 
@@ -643,19 +643,397 @@ loaderis iet caur dispatcheri prioritārā kārtībā.
 - "drag-to-zoom" diagrammā — tikai pogas un manuāli no/līdz lauki;
 - masveida atlase un eksports — tikai filtri + 1000-rindu limits.
 
+## Simulatoru darba lapa (Phase 7, Task 4)
+
+Sākot ar Phase 7 Task 4 simulatora vadība un konfigurācija **vairs
+neatrodas** uz dashboarda pārskata (`/dashboard/`). Tā tagad ir
+atsevišķa darba lapa.
+
+- URL: `GET /dashboard/simulator/`
+- Route name: `dashboard:simulator`
+- Augšējā navigācijā: ikona/link **Simulators**
+  (blakus `Pārskats`, `Aktīvi`, `Notikumi`, `Izveidot jaunu aktīvu`)
+- Pieejas kontrole: tā pati `LoginRequiredMixin` kā pārējām dashboarda
+  lapām. Lapu redz **visi** autentificētie lietotāji, bet vadības un
+  rediģēšanas darbības ir aktīvas tikai tiem, kam ir
+  `simulator.can_control_simulator` (vai `is_superuser`).
+
+### Lapas sadaļas
+
+1. **Statusa un vadības panelis** — scenārija/profila kods, aktīvs/
+   neaktīvs, pēdējais palaidiens, ziņojumu skaits, **Sākt** / **Apturēt** /
+   **Palaist vienu reizi** pogas un tiešraides indikators (tas pats kā
+   3A/3B fāzē, tikai uz darba lapas).
+2. **Profila izvēle un redaktors** — profila izvēles drop-down,
+   *Izveidot jaunu*, lauki (nosaukums, kods, intervāls sekundēs,
+   apraksts), metriku konfigurācijas tabula un *Saglabāt profilu*. Sk.
+   sadaļu *Simulatora profila redaktors* zemāk.
+3. **Tiešraides diagrammas** — viena diagramma uz katru ieslēgto metriku,
+   ar Latvian virsrakstu, X asi `Laiks`, Y asi `<Etiķete> (<Mērvienība>)`,
+   tooltip un mēģbutonu/atloka zoom režīmu. Sk. sadaļu *Diagrammas*
+   zemāk.
+4. **MQTT ziņojumu plūsmas tabula** — tiešraides tabula ar laiku,
+   profila kodu, aktīva kodu, MQTT topic, metriku kopsavilkumu, payload
+   priekšskatījumu, statusu un kļūdu (ja bijusi).
+
+### Simulatora profila redaktors
+
+Profils ir pamata `SimulatorScenario` ieraksts plus tā
+`SimulatorScenarioDevice` saistības un katras ierīces
+`SimulatorMetricProfile` rindas. Phase 7 Task 4 ietvaros **netika**
+pievienoti jauni modeļi — esošā shēma jau pārstāvēja visus vajadzīgos
+laukus. Šī iemesla dēļ jaunas migrācijas šajā uzdevumā netika veidotas.
+
+Lietotājs ar `can_control_simulator` var:
+
+- atvērt esošu profilu izvēles sarakstā un to rediģēt;
+- nospiest **Izveidot jaunu** un sākt no tukša profila;
+- aizpildīt profila vārdu, kodu (`code`), intervālu sekundēs,
+  aprakstu un opcionālu *site code*;
+- konfigurēt katras metrikas atslēgu (`temperature_c`, `voltage_v`,
+  `power_w`, `battery_soc_pct` u.c.), Latvian etiķeti, mērvienību
+  (`°C`, `V`, `W`, `%`, `A`, …), `min`, `bāze`, `max`, `noise_amplitude`,
+  ieslēgt/izslēgt un sort order;
+- nospiest **Saglabāt profilu**, kas izsauc
+  `POST /api/simulator/profiles/` (jaunam profilam) vai
+  `PATCH /api/simulator/profiles/<code>/` (esošam profilam) ar CSRF un
+  sesijas autentifikāciju.
+
+Validācija (gan klienta, gan servera pusē):
+
+- `code` obligāts un unikāls;
+- `interval_seconds` ir pozitīvs vesels skaitlis;
+- katrai metrikai ir `metric_key` un `unit`;
+- `min < max`;
+- `bāze ∈ [min, max]`;
+- `noise_amplitude ≥ 0`;
+- vismaz vienai metrikai jābūt ieslēgtai.
+
+Servera pusē neveiksmes atgriežas kā `400 Bad Request` ar
+`field_errors` un latvisku kopsavilkuma paziņojumu, kas redzams
+profila redaktorā kā kļūdu kartiņa.
+
+### Diagrammas
+
+Phase 7 Task 4 nepievieno trešās puses charting bibliotēku. Tās vietā
+tiek izmantots **iekšējs vienkāršs SVG diagrammas helperis**
+(`createSimulatorChart` failā
+`apps/dashboard/static/dashboard/dashboard.js`). Šī izvēle ir
+tāpēc, ka:
+
+- projekts apzināti izmanto vanilla JS bez Node build pipeline;
+- helperis ir mazs, vienā failā, bez ārējām CDN atkarībām un strādā
+  produktīvajā Docker vidē, kur ārējais tīkls nav obligāts;
+- atbalsta to, ko prasa specifikācija — Latvian virsraksts,
+  marķētas asis, mērvienība, tooltip, dzīva punktu pievienošana un
+  zooms / laika perioda izvēle ar peli vai pieskaršanos.
+
+**Zoom / laika perioda mijiedarbība:**
+
+- klikšķis un vilkšana pa diagrammu izvēlas X-axis intervālu, kas
+  pietuvojas tikai šai diagrammai;
+- dubultklikšķis vai poga **Atlikt zoom** atjauno pilnu skatu;
+- pieejama poga **Auto-scroll**, kas, ja ieslēgta, automātiski seko
+  jaunākajiem WebSocket punktiem;
+- katra diagramma neatkarīgi pārvalda savu zoom stāvokli, tā ka
+  ieslīpšanās temperatūrā netraucē strāvai vai jaudai.
+
+Ja par konkrētu metriku vēl nav datu, parādās latvisks tukšā stāvokļa
+paziņojums **“Nav vēl datu šai metrikai.”** vienkārši tukšā SVG vietā.
+
+### MQTT ziņojumu plūsmas tabula
+
+Tabula uz simulatoru darba lapas attēlo reālus ziņojumus, ko nosūtījis
+simulators. Datu avots ir notikums `simulator_mqtt_message_sent`, ko
+`apps/simulator/services/control.py` publicē caur
+`apps.dashboard.live_updates.publish_simulator_mqtt_message` katram
+ciklam (gan reālajai publicēšanai, gan dry-run un publicēšanas
+neveiksmes gadījumā).
+
+Notikuma payload:
+
+- `topic` (MQTT tēma);
+- saīsināts `payload_preview` (truncēts pārlūkā, lai DOM neaugtu);
+- profila/scenārija `code`;
+- aktīva `asset_code`/`device_code`;
+- timestamp;
+- `status` (`ok` / `failed` / `dry_run`);
+- `error` (ja statuss `failed`).
+
+Tabula ir **FIFO buferis pārlūkā ar maksimumu 100 rindām**, lai
+ilgstoša lapas atvēršana neradītu DOM ekspansiju. Tabula tiek ietīta
+ritināmā kastītē (`mqtt-stream-scroll`) ar fiksētu maksimālo augstumu;
+ja jaunas rindas pārpilda redzamo apgabalu, kastītē parādās ritjosla,
+un tabulas galva ir „lipīga” (sticky), lai kolonnu nosaukumi paliek
+redzami, ritinot. Atverot lapu pirmo reizi, tabula sākotnēji ir tukša
+un piepildās ar tiešraides notikumiem; tas ir apzināts ierobežojums,
+jo simulatora ziņojumi patlaban netiek atsevišķi serializēti par
+sākotnējo backfill atbildi šim galapunktam.
+
+### Atļaujas un CSRF
+
+Tā pati uzvedība, ko apraksta Phase 7 Task 3B sadaļa zemāk, attiecas
+arī uz darba lapu:
+
+- `simulator.can_control_simulator` (vai `is_superuser=True`) ir
+  vajadzīgs, lai aktivizētu **Sākt**, **Apturēt**, **Palaist vienu
+  reizi** pogas, **Saglabāt profilu** un metrikas rediģēšanas laukus;
+- bez šīs atļaujas pogas un lauki ir vizuāli atspējoti
+  (`disabled`, `aria-disabled="true"`), un parādās latvisks paziņojums
+  **“Jums nav tiesību vadīt simulatoru.”** / *“Lai vadītu simulatoru,
+  lietotājam jābūt pierakstītam sistēmā.”*;
+- visas POST/PATCH darbības pievieno `X-CSRFToken` no
+  `simulator_config` JSON bloka un `credentials: "same-origin"`.
+
+### Lai grafiki un MQTT plūsma faktiski atjauninātos
+
+> **Uzmanību.** Pogas **Sākt** / **Apturēt** tikai pārslēdz
+> `SimulatorScenario.is_active` datubāzē — tās **NEPALAIŽ** periodisko
+> ziņojumu emisiju pašā web procesā. Lai grafiki un MQTT plūsma
+> regulāri atjauninātos (interval seconds), papildus jādarbojas
+> simulatora servisam.
+
+`docker-compose.local.yml` (un `docker-compose.prod.yml`) iekļauj
+atsevišķu **`simulator`** servisu, kas palaiž
+`python manage.py run_simulator --duration-seconds 86400 --sleep-seconds 5`
+ar Bash retry-cilpu. Šis process:
+
+1. Pēc katra cikla pārlasa `is_active` no datubāzes — nospiežot
+   **Apturēt** uz dashboarda, nākamais cikls tiek izlaists; nospiežot
+   **Sākt** atkal, emisija atsākas bez konteinera restarta.
+2. Pēc katra cikla publicē `simulator_mqtt_message_sent` notikumu, ko
+   `/dashboard/simulator/` lapa saņem caur WebSocket un izmanto, lai
+   pievienotu rindu MQTT plūsmas tabulai un punktu katrā ieslēgtajā
+   grafikā.
+3. Pēc katra cikla atjauno `last_run_at`, tāpēc “Pēdējais palaidiens”
+   UI vērtība paliek aktuāla.
+
+Lai palaistu vai apturētu šo servisu:
+
+```bash
+# palaist
+docker compose -f docker-compose.local.yml up -d simulator
+
+# pārliecināties, vai darbojas
+docker compose -f docker-compose.local.yml ps simulator
+
+# apturēt (UI Sākt/Apturēt nestrādās bez šī servisa)
+docker compose -f docker-compose.local.yml stop simulator
+```
+
+Bez šī servisa darba lapa joprojām strādā (statusa kartīte, profila
+redaktors, **Palaist vienu reizi** poga), bet `Tiešraides grafiki`
+un `MQTT ziņojumu plūsma` paliek tukši, līdz lietotājs nospiež
+**Palaist vienu reizi** vai kāds cits process publicē MQTT ziņojumus
+ar simulatora topic struktūru.
+
+### WebSocket fallback
+
+Lapa atver `ws://<host>/ws/dashboard/simulator/`
+(route name: `ws-dashboard-simulator`). Šis WebSocket abonē gan
+`SIMULATOR_GROUP`, gan `OVERVIEW_GROUP`, lai diagrammas un MQTT plūsma
+atjauninātos no `simulator_mqtt_message_sent`,
+`simulator_run_completed`, `simulator_status_changed`,
+`telemetry_received`, `raw_message_received`, `asset_state_updated`,
+`anomaly_created` notikumiem.
+
+Ja `WebSocket` API nav pieejams vai pieslēgums tiek pārtraukts:
+
+- tiešraides indikators rāda **Tiešraide atvienota** vai **Tiešraide
+  atspējota**;
+- profilu saraksts un statusa kartīte joprojām tiek atjaunoti caur
+  REST polling fallback;
+- diagrammas paliek interaktīvas (zoom, tooltip), bet nesaņem jaunus
+  punktus; **Palaist vienu reizi** poga turpina darboties — pēc
+  REST atbildes lapa pati pievienos jauno mērījumu.
+
+### Manuāla verifikācija
+
+Pieņemot, ka demo dati ielādēti (`python manage.py seed_demo_data`):
+
+1. `GET /dashboard/` atgriež 200; pārskats vairs **neattēlo**
+   simulatora paneli, simulatora pogas, simulatora palaidienu tabulu
+   un “Pēdējais simulators” karti.
+2. Augšējā navigācijā ir saite **Simulators**.
+3. `GET /dashboard/simulator/` atgriež 200 un parāda statusu, profila
+   redaktoru, diagrammu režģi un MQTT plūsmas tabulu.
+4. Lietotājs ar `can_control_simulator` var:
+   - izveidot/labot profilu ar metrikām `temperature_c` (°C),
+     `voltage_v` (V), `power_w` (W), `battery_soc_pct` (%);
+   - iestatīt intervālu sekundēs;
+   - nospiest **Sākt**, **Apturēt** un **Palaist vienu reizi**;
+   - redzēt jaunu punktu diagrammās un jaunu rindu MQTT tabulā pēc
+     **Palaist vienu reizi** (caur WebSocket).
+5. Lietotājs bez atļaujas redz lapu, bet pogas un metriku rediģēšana ir
+   atspējotas.
+6. `GET /dashboard/assets/charger-001/` un `GET /dashboard/assets/<uuid>/`
+   joprojām strādā.
+7. `GET /dashboard/assets/does-not-exist/` atgriež 200 un dod JS rīcību
+   parādīt “Aktīvs nav atrasts” stāvokli.
+
+## Simulatora vadības panelis un tiešraides atjauninājumi (Phase 7, Task 3A + 3B)
+
+> **Piezīme (Phase 7 Task 4):** šī sadaļa apraksta *vēsturisko* paneli,
+> kas Phase 7 Task 3A/3B laikā atradās uz dashboarda pārskata. Sākot ar
+> Phase 7 Task 4 panelis ir **pārvietots** uz atsevišķo
+> `/dashboard/simulator/` darba lapu (sk. sadaļu *Simulatoru darba lapa*
+> augstāk). Vadības galapunkti, tiešraides indikatora uzvedība un CSRF
+> apstrāde paliek nemainīga.
+
+Pārskata lapas apakšā, simulatora sadaļā, ir **simulatora vadības panelis** ar trīs
+pogām un tiešraides statusa indikatoru:
+
+- **Sākt** — izsauc `POST /api/simulator/start/`. Tas iezīmē izvēlēto scenāriju kā
+  aktīvu (`is_active = True`) datubāzē. Pati ģenerēšana **netiek** uzsākta web
+  procesā — to dara atsevišķa `python manage.py run_simulator …` cron komanda.
+- **Apturēt** — izsauc `POST /api/simulator/stop/`. Iezīmē scenāriju kā neaktīvu.
+- **Palaist vienu reizi** — izsauc `POST /api/simulator/run-once/`. Sinhroni
+  izpilda **vienu** ciklu (vienu telemetrijas ziņojumu uz katru aktīvo
+  `SimulatorScenarioDevice`) un atgriež rezultātu. Pēc tam pārskats automātiski
+  pieprasa atjauninātos datus, lai jaunais mērījums ir uzreiz redzams.
+
+### Atļaujas un autentifikācija (Phase 7, Task 3B)
+
+Visas trīs vadības darbības (Sākt / Apturēt / Palaist vienu reizi) tagad prasa:
+
+1. autentificētu Django sesiju, **un**
+2. atļauju `simulator.can_control_simulator` **vai** `is_superuser=True`.
+
+`GET /api/simulator/status/` atbilstoši paliek pieejams visiem klientiem
+(arī anonīmiem), lai panelis varētu pareizi attēlot, kāpēc pogas ir atspējotas.
+Atbildē tagad ir lauks `can_control` (`true` / `false`) un `is_authenticated`,
+ko dashboarda JS izmanto, lai izvēlētos pareizo paziņojumu un pogu stāvokli.
+
+**UI uzvedība**, kad lietotājam nav vadības tiesību:
+
+- pogas **Sākt**, **Apturēt**, **Palaist vienu reizi** ir vizuāli atspējotas
+  (`disabled`, `aria-disabled="true"`) un tām ir `title` ar latvisku
+  paskaidrojumu;
+- zem pogām parādās latvisks paziņojums:
+  - autentificētam, bet bez atļaujas: **“Jums nav tiesību vadīt simulatoru.”**;
+  - anonīmam (teorētiski — pārskata lapu reāli aizsargā `LoginRequiredMixin`,
+    bet API atbilde to apkalpotu): **“Lai vadītu simulatoru, lietotājam jābūt
+    pierakstītam sistēmā.”**;
+- statusa pills, scenārija kods, pēdējais palaidiens, ziņojumu skaits un
+  tiešraides indikators paliek redzami;
+- WebSocket pieslēgums un periodiskais polling (kā fallback) turpina darboties
+  bez izmaiņām.
+
+**Kā piešķirt atļauju.**
+
+- *Django admin*: lietotāja vai grupas formā sadaļā **User permissions** /
+  **Group permissions** atrodi `simulator | simulator scenario | Var vadīt
+  simulatoru` un saglabā.
+- *Django shell* lokālai testēšanai:
+
+  ```bash
+  docker compose -f docker-compose.local.yml exec web python manage.py shell
+  ```
+
+  ```python
+  from django.contrib.auth import get_user_model
+  from django.contrib.auth.models import Permission
+  user = get_user_model().objects.get(username="operator")
+  perm = Permission.objects.get(content_type__app_label="simulator",
+                                codename="can_control_simulator")
+  user.user_permissions.add(perm)
+  ```
+
+- *Superusers* (`createsuperuser`) iet apkārt atļaujas pārbaudei un drīkst
+  vadīt simulatoru jebkurā gadījumā.
+
+### CSRF un POST pieprasījumi
+
+Tā kā vadības galapunkti tagad strādā caur `SessionAuthentication`, Django
+piemēro CSRF aizsardzību. Dashboarda JS:
+
+- nolasa `csrfToken` no servera puses ielādēta `dashboard_config` JSON bloka;
+- ja konfigurācijā tā nav (piem., aizpildīta sesija), izmanto `csrftoken`
+  cookie kā rezervi;
+- katram POST pieprasījumam pievieno galveni `X-CSRFToken: <token>` un
+  `credentials: "same-origin"`.
+
+Ārējiem CLI klientiem (piem., `curl`) jāautentificējas (sesijas cookie ar
+`/admin/login/` vai cita projekta autentifikācijas plūsma) un jāpievieno
+`X-CSRFToken` galvene, kas atbilst `csrftoken` cookie. CSRF nav globāli
+atspējots un nav atspējots tieši simulatora galapunktiem.
+
+Panelis rāda:
+
+- pašreizējo statusa simbolu (Aktīvs / Apturēts / Nav scenārija);
+- scenārija kodu;
+- pēdējā palaidiena timestamp;
+- ziņojumu skaitu pēdējā ciklā;
+- tiešraides statusa indikatoru (sk. zemāk);
+- pēdējo backenda atbildes paziņojumu (latviešu valodā).
+
+Pogas pārbauda atbildi un parāda kompaktu sarkanu vai zilu ziņojumu
+`simulator-feedback` zonā. Pogas tiek deaktivizētas (un pārveidotas par
+"Strādā…"), kamēr darbība tiek izpildīta.
+
+### Tiešraide caur WebSocket (Django Channels)
+
+Pārskata un detail lapa atver WebSocket pieslēgumu:
+
+- pārskats: `ws://<host>/ws/dashboard/`;
+- detail lapa: `ws://<host>/ws/dashboard/assets/<id-vai-kods>/`.
+
+Backenda servisu slānis (MQTT ingestion, analītika, simulatora vadība) caur
+`apps/dashboard/live_updates.py` raida nelielas notikumu ziņas (`event_type`,
+`asset_code`, `ts`). Lapa, saņemot ziņu, atjaunina tikai attiecīgo sadaļu —
+piemēram, `simulator_status_changed` atjaunina simulatora paneli, bet
+`telemetry_received` atjaunina pārskata kartiņas, aktīvu tabulu un
+telemetrijas sadaļu.
+
+Atbalstītie `event_type`:
+
+- `simulator_status_changed`
+- `telemetry_received`
+- `asset_state_updated`
+- `anomaly_created`
+- `raw_message_received`
+
+### Tiešraides statusa indikators
+
+Indikators rāda vienu no četriem stāvokļiem latviešu valodā:
+
+- **Tiešraide pieslēgta** — WebSocket ir atvērts, lapa galvenokārt atjauninās ar notikumiem;
+- **Mēģina pieslēgties** — sākotnējais vai atkārtotais pieslēgums;
+- **Tiešraide atvienota** — pieslēgums zudis, lapa pārslēgusies uz periodisku
+  atjaunošanu;
+- **Izmanto periodisku atjaunošanu** — fallback, kad WebSocket nav pieejams.
+
+Kad WebSocket ir veiksmīgi pieslēgts, polling intervāls tiek pagarināts no
+30 s līdz 120 s (lapa kļūst notikumu vadīta, bet self-heal saglabājas).
+Kad pieslēgums zūd, polling atgriežas pie agresīvākā 30 s režīma. Pieslēguma
+atjaunošana izmanto eksponenciālu backoff (1 → 30 sekunžu maksimums).
+
+### Ja Channels / WebSocket nav pieejams
+
+Lapa paliek pilnīgi lietojama bez WebSocket. JavaScript:
+
+- pirmajā mēģinājumā parāda **Mēģina pieslēgties**;
+- ja `WebSocket` API nav (piem., kāda noslēgta vide), parāda **Tiešraide atspējota**;
+- joprojām ielādē sākotnējos datus caur API `fetch`;
+- saglabā 30 s polling kā fallback, ja `Auto 30 s` slēdzis ir ieslēgts.
+
 ## Kas šajā uzdevumā **nav** ieviests
 
 Šie elementi apzināti paliek nākamajiem uzdevumiem:
 
-- WebSocket / Django Channels reāllaika atjauninājumi — datu atsvaidzināšana ir tikai manuāla vai 30 s polls;
-- simulatora vadības pogas (`start`/`stop`) — tas joprojām notiek caur `python manage.py run_simulator ...`;
-- rakstāmi REST API endpointi — viss raksts notiek tikai caur server-side rendered Django formām;
-- vairāku sensoru pievienošana vienlaikus aktīva izveides formā — vienā plūsmā atbalstīts viens sensors;
-- lietotāju lomu pārvaldība un konkrētas atļaujas dashboard lapām — visi pieslēgti lietotāji redz vienu un to pašu izvēlni;
-- vairākvalodu UI — pašlaik UI virsraksti ir latviešu valodā, jo dokumentācija arī ir latviski;
-- pilna payload `RawMessage` skatīšana detail lapā — pieejama caur `/api/raw-messages/{id}/`;
-- papildu metriku diagrammas (piem., `current_a`) — pievienojams nākotnē, papildinot `ASSET_DETAIL_CHART_METRICS` `apps/dashboard/views.py`;
-- notikumu apstiprināšana / slēgšana / komentāri (Phase 7, Task 4A — apzināti tikai lasīšana).
+- pieteikšanās lapas, reģistrācija, paroles atjaunošana, pielāgots `User`
+  modelis, vairākklientu (multi-tenant) atbalsts vai jauns lomu pārvaldības UI —
+  Phase 7, Task 3B izmanto Django esošo autentifikāciju un atļauju modeli;
+- rakstāmi REST API endpointi ārpus simulatora vadības — pārējais raksts notiek
+  tikai caur server-side rendered Django formām;
+- vairāku sensoru pievienošana vienlaikus aktīva izveides formā — vienā plūsmā
+  atbalstīts viens sensors;
+- pilna payload `RawMessage` skatīšana detail lapā — pieejama caur
+  `/api/raw-messages/{id}/`;
+- papildu metriku diagrammas (piem., `current_a`) — pievienojams nākotnē,
+  papildinot `ASSET_DETAIL_CHART_METRICS` `apps/dashboard/views.py`;
+- notikumu apstiprināšana / slēgšana / komentāri (Phase 7, Task 4A — apzināti
+  tikai lasīšana).
 
 ## Manuāla verifikācija
 
@@ -720,3 +1098,48 @@ Atveriet `http://localhost:8000/dashboard/assets/charger-001/`. Sagaidāmais ska
 - `Pēdējais MQTT ziņojums` panelis rāda `message_id`, `processing_status`, `received_at`, `topic`;
 - nezināms kods (piem., `/dashboard/assets/does-not-exist/`) atver lapu, bet rāda sarkanu paziņojumu **"Aktīvs ‘does-not-exist’ netika atrasts."** ar saiti atpakaļ uz pārskatu;
 - **Atsvaidzināt** atkārtoti ielādē kopsavilkumu, mērījumus, notikumus un visas četras diagrammas paralēli.
+
+#### Simulatora vadības panelis un tiešraide
+
+Atveriet `http://localhost:8000/dashboard/`. Sagaidāmais skats:
+
+- simulatora sadaļā ir redzams panelis ar pogām **Sākt**, **Apturēt**, **Palaist vienu reizi**;
+- tiešraides indikators sākumā rāda **Mēģina pieslēgties**, pēc neilga brīža **Tiešraide pieslēgta**;
+- klikšķis uz **Sākt** maina indikatoru uz "Aktīvs" un ziņojuma laukā parādās "Simulators palaists scenārijam 'default_demo'.";
+- klikšķis uz **Apturēt** maina indikatoru uz "Apturēts";
+- klikšķis uz **Palaist vienu reizi** veic vienu MQTT publikāciju (vai ja
+  mqtt_worker arī ir palaists, jaunais mērījums ātri parādās pārskata
+  telemetrijas sadaļā un aktīva detail lapā **bez** 30 s polling gaidīšanas);
+- ja Mosquitto nav sasniedzams, "Palaist vienu reizi" atgriež `ok=false` un
+  paneļa zonā parādās lasāms latviešu kļūdas paziņojums; pati datubāze paliek
+  konsekventā stāvoklī (`SimulatorRun` tiek atzīmēts kā `failed`);
+- ja izslēdz Redis vai apstādina `daphne`, indikators pāriet uz **Tiešraide
+  atvienota** un lapa turpina darboties ar 30 s polling.
+
+#### Simulatora atļauju pārbaude (Phase 7, Task 3B)
+
+1. Izveidojiet divus testa lietotājus, vienam piešķiriet
+   `simulator.can_control_simulator`:
+
+   ```bash
+   docker compose -f docker-compose.local.yml exec web python manage.py shell -c "
+   from django.contrib.auth import get_user_model
+   from django.contrib.auth.models import Permission
+   U = get_user_model()
+   viewer, _ = U.objects.get_or_create(username='viewer')
+   viewer.set_password('demo'); viewer.save()
+   ctrl, _ = U.objects.get_or_create(username='controller')
+   ctrl.set_password('demo'); ctrl.save()
+   p = Permission.objects.get(content_type__app_label='simulator', codename='can_control_simulator')
+   ctrl.user_permissions.add(p)
+   print('viewer/demo (no perm), controller/demo (with perm)')
+   "
+   ```
+2. Pierakstieties kā `viewer` → `/dashboard/` rāda simulatora paneli, bet:
+   - **Sākt**, **Apturēt**, **Palaist vienu reizi** ir atspējotas;
+   - zem pogām redzams paziņojums “Jums nav tiesību vadīt simulatoru.”
+3. Pierakstieties kā `controller` (vai `createsuperuser`) → tās pašas pogas
+   ir aktīvas; klikšķis uz **Sākt**, **Apturēt** un **Palaist vienu reizi**
+   strādā kā līdz šim, un atbilde ir veiksmīga (`ok=true`).
+4. Atvērstā tabā pārbaudiet `Network` paneli — POST pieprasījumam ir
+   `X-CSRFToken` galvene un `Cookie: csrftoken=…`. Atbilde ir 200.

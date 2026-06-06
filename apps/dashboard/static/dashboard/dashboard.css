@@ -269,6 +269,101 @@ code { font-size: 12px; color: var(--color-muted); }
 }
 .status-pill--ok       { background: #dcfce7; color: #166534; }
 .status-pill--degraded { background: #fee2e2; color: #991b1b; }
+.status-pill--warning  { background: #fef3c7; color: #92400e; }
+
+/* ── Simulator control panel (Phase 7, Task 3A) ─────────────────────── */
+
+.simulator-control {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.simulator-control__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.simulator-control__header .subsection-title { margin: 0; }
+.simulator-control__message {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-muted);
+  min-height: 1em;
+}
+.simulator-control__meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 14px;
+  margin: 0;
+  font-size: 13px;
+}
+.simulator-control__meta dt {
+  color: var(--color-muted);
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.4px;
+}
+.simulator-control__meta dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.simulator-control__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.simulator-control__actions .btn {
+  min-width: 130px;
+}
+.simulator-control__actions .btn[disabled] {
+  opacity: 0.6;
+  cursor: progress;
+}
+.simulator-control__actions .btn[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+/* Phase 7, Task 3B — permission notice shown when ``can_control`` is
+   false. Visually distinct from the regular feedback area so it stays
+   visible even after dismissable feedback messages clear. */
+.simulator-control__permission {
+  margin: 4px 0 0 0;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--smt-color-text-muted, #555);
+  background: var(--smt-color-surface-muted, #f5f5f5);
+  border-left: 3px solid var(--smt-color-warning, #d18d2a);
+  border-radius: 4px;
+}
+.simulator-control__feedback {
+  margin-top: 4px;
+}
+.simulator-control__feedback .state {
+  margin: 0;
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+/* Live status indicator on the asset detail back-link row */
+.back-link__live {
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--color-muted);
+}
+.back-link__live .status-pill { font-size: 11px; padding: 2px 8px; }
+
+@media (max-width: 720px) {
+  .simulator-control__actions .btn { flex: 1 1 100%; }
+  .simulator-control__meta { grid-template-columns: 1fr; }
+}
 
 /* ── Loading / error / empty states ─────────────────────────────────── */
 
@@ -805,4 +900,231 @@ code { font-size: 12px; color: var(--color-muted); }
   width: 100%;
   height: 200px;
   display: block;
+}
+
+/* ── Phase 7, Task 4 — Simulator workspace ─────────────────────────── */
+
+.dashboard-live-status {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+.profile-editor {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: var(--shadow);
+}
+.profile-editor__top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+}
+.profile-editor__form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.profile-editor__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+.profile-editor__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--color-muted);
+}
+.profile-editor__field input,
+.profile-editor__field select {
+  font: inherit;
+  font-size: 13px;
+  color: var(--color-text);
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: #fff;
+}
+.profile-editor__field input:read-only {
+  background: #f8fafc;
+  color: var(--color-muted);
+}
+.profile-editor__field input:disabled,
+.profile-editor__field select:disabled {
+  background: #f1f5f9;
+  color: var(--color-muted);
+  cursor: not-allowed;
+}
+.profile-editor__metrics {
+  overflow-x: auto;
+}
+.profile-editor__metrics-table th,
+.profile-editor__metrics-table td {
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.profile-editor__metrics-table input[type="number"] {
+  width: 90px;
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+.profile-editor__metrics-table input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+}
+.profile-editor__metrics-table input:disabled {
+  background: #f1f5f9;
+  color: var(--color-muted);
+  cursor: not-allowed;
+}
+.profile-editor__hint {
+  margin: 6px 0 0;
+  color: var(--color-muted);
+  font-size: 12px;
+}
+.profile-editor__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.profile-editor__feedback {
+  border-top: 1px dashed var(--color-border);
+  padding-top: 8px;
+}
+.profile-editor__errors {
+  margin: 6px 0 0 16px;
+  padding: 0;
+  color: var(--color-error);
+  font-size: 12px;
+}
+
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 14px;
+}
+.chart-card {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 12px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-shadow: var(--shadow);
+}
+.chart-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.chart-card__title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.chart-card__reset {
+  font-size: 11px;
+  padding: 3px 8px;
+}
+.chart-card__svg {
+  width: 100%;
+  height: 220px;
+  display: block;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.chart-card__tooltip {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: rgba(31, 37, 50, 0.95);
+  color: #fff;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  pointer-events: none;
+}
+.chart-card__empty {
+  margin-top: 10px;
+}
+
+.mqtt-stream-table {
+  font-size: 12px;
+}
+.mqtt-stream-table th,
+.mqtt-stream-table td {
+  vertical-align: top;
+}
+.mqtt-stream-table__preview {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Scrollable table boxes (Phase 7 Task 4 follow-up) ───────────────────────
+ *
+ * Both the simulator workspace's MQTT message stream and the asset
+ * detail page's "Pēdējie mērījumi" table can grow large during a long
+ * session. Wrapping them in a fixed-height scroll container prevents
+ * the page from getting unbounded vertical length while keeping the
+ * table header sticky for context.
+ */
+
+.mqtt-stream-scroll,
+.measurements-scroll {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: auto;
+  position: relative;
+}
+
+.mqtt-stream-scroll {
+  max-height: 360px;
+}
+
+.measurements-scroll {
+  max-height: 320px;
+}
+
+/* The wrapped tables sit flush against the scroll container; the
+ * container owns the rounded corners + shadow, so the table itself
+ * shouldn't draw a redundant border or background. */
+.mqtt-stream-scroll > .data-table,
+.measurements-scroll > .data-table {
+  margin: 0;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+/* Sticky header keeps the column titles visible while the user
+ * scrolls through historical rows. The background colour matches the
+ * non-scroll variant (``.data-table th`` rule above) so the rendered
+ * table looks identical when the scroll container is short enough that
+ * scrolling is not needed. */
+.mqtt-stream-scroll > .data-table thead th,
+.measurements-scroll > .data-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f8fafc;
 }

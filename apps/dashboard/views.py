@@ -21,6 +21,7 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.db import transaction
 from django.http import Http404, HttpResponse
+from django.middleware.csrf import get_token
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views import View
@@ -59,11 +60,16 @@ from apps.iot_config.models import MetricDefinition
 # Charts shown on the asset detail page. Kept here (not in the template)
 # so the test suite can assert exactly which metrics the page advertises
 # without scraping JavaScript.
+#
+# Phase 7 Task 4 follow-up: the JavaScript chart factory used here is the
+# same ``createSimulatorChart`` helper as the simulator workspace, so
+# each entry must carry display metadata (Latvian label + unit) rather
+# than a bare metric key. Order is the on-screen order.
 ASSET_DETAIL_CHART_METRICS = (
-    "temperature_c",
-    "voltage_v",
-    "power_w",
-    "battery_soc_pct",
+    {"key": "temperature_c",   "label": "Temperatūra",      "unit": "°C"},
+    {"key": "voltage_v",       "label": "Spriegums",        "unit": "V"},
+    {"key": "power_w",         "label": "Jauda",            "unit": "W"},
+    {"key": "battery_soc_pct", "label": "Baterija (SoC)",   "unit": "%"},
 )
 
 
@@ -75,13 +81,17 @@ class OverviewView(LoginRequiredMixin, TemplateView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
+        # Phase 7, Task 4 — overview now focuses on operational data only.
+        # Simulator control + profile editing have moved to the dedicated
+        # /dashboard/simulator/ workspace; the overview keeps the WebSocket
+        # path so broadcast events can still nudge overview tables if
+        # needed (e.g. ``telemetry_received`` triggers a refresh).
         context["dashboard_config"] = {
             "endpoints": {
                 "overview": reverse("api-overview"),
                 "overviewAssets": reverse("api-overview-assets"),
                 "overviewEvents": reverse("api-overview-events"),
                 "overviewTelemetry": reverse("api-overview-telemetry"),
-                "overviewSimulator": reverse("api-overview-simulator"),
                 "health": reverse("api-health"),
             },
             "assetSummaryUrlTemplate": reverse(
@@ -91,7 +101,100 @@ class OverviewView(LoginRequiredMixin, TemplateView):
                 "dashboard:asset-detail",
                 kwargs={"asset_identifier": "__CODE__"},
             ),
+            # WebSocket URL is built relative to the request so the JS
+            # picks up the correct host + scheme (ws/wss) at load time.
+            "websocketPath": "/ws/dashboard/",
             "autoRefreshIntervalSeconds": 30,
+            # When the WebSocket is connected, the JS lengthens the
+            # polling cadence to this value so the page is event-driven
+            # but still self-heals if a broadcast is missed.
+            "liveAutoRefreshIntervalSeconds": 120,
+        }
+        return context
+
+
+class SimulatorWorkspaceView(LoginRequiredMixin, TemplateView):
+    """
+    Phase 7, Task 4 — dedicated simulator tool workspace.
+
+    Mounted at ``/dashboard/simulator/``. Renders for any logged-in
+    operator (the page is intentionally visible to read-only users so
+    they can see WHY their controls are disabled), but the JavaScript
+    gates all write actions on ``can_control_simulator`` returned by
+    the API plus the server-rendered ``canControlSimulator`` flag in
+    the page config.
+
+    The page itself is a thin shell: data, charts, and the MQTT
+    message stream are all driven by client-side JavaScript reading
+    from the existing simulator + profile + WebSocket endpoints.
+    """
+
+    template_name = "dashboard/simulator.html"
+    http_method_names = ["get", "head", "options"]
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        from apps.api.permissions import user_can_control_simulator
+
+        request = self.request
+        user = getattr(request, "user", None)
+
+        # Fixed metric metadata for the chart legend / Y-axis titles.
+        # Sourced server-side so the page stays usable even when the
+        # MetricDefinition rows are not seeded yet.
+        chart_metric_defaults = [
+            {"key": "temperature_c", "label": "Temperatūra", "unit": "°C"},
+            {"key": "voltage_v",     "label": "Spriegums",   "unit": "V"},
+            {"key": "current_a",     "label": "Strāva",      "unit": "A"},
+            {"key": "power_w",       "label": "Jauda",       "unit": "W"},
+            {"key": "battery_soc_pct", "label": "Baterija (SoC)", "unit": "%"},
+        ]
+        # Augment with any extra MetricDefinitions present so the page
+        # can chart whatever the simulator scenario emits.
+        defined = MetricDefinition.objects.values("key", "display_name", "unit")
+        defined_keys = {d["key"] for d in defined}
+        seen_defaults = {row["key"] for row in chart_metric_defaults}
+        for row in defined:
+            if row["key"] in seen_defaults:
+                continue
+            chart_metric_defaults.append({
+                "key": row["key"],
+                "label": row["display_name"] or row["key"],
+                "unit": row["unit"] or "",
+            })
+        # Drop default rows that have no MetricDefinition AND no chance
+        # of arriving (keeps the chart grid honest); only filter when the
+        # defaults are clearly absent — first-run installs need them.
+        if defined_keys:
+            chart_metric_defaults = [
+                row for row in chart_metric_defaults
+                if row["key"] in defined_keys or True  # keep — UI shows empty state
+            ]
+
+        context["simulator_config"] = {
+            "endpoints": {
+                "simulatorStatus":     reverse("api-simulator-status"),
+                "simulatorStart":      reverse("api-simulator-start"),
+                "simulatorStop":       reverse("api-simulator-stop"),
+                "simulatorRunOnce":    reverse("api-simulator-run-once"),
+                "profileList":         reverse("api-simulator-profile-list"),
+                # ``__CODE__`` placeholder is replaced client-side.
+                "profileDetailTemplate": reverse(
+                    "api-simulator-profile-detail", kwargs={"code": "__CODE__"},
+                ),
+                "measurements": reverse("measurement-list"),
+            },
+            "websocketPath": "/ws/dashboard/simulator/",
+            "autoRefreshIntervalSeconds": 30,
+            "liveAutoRefreshIntervalSeconds": 120,
+            "isAuthenticated": bool(getattr(user, "is_authenticated", False)),
+            "canControlSimulator": user_can_control_simulator(user),
+            "csrfToken": get_token(request) if request else "",
+            "chartMetrics": chart_metric_defaults,
+            # Cap how many points / messages the page keeps in memory
+            # so a long-running session doesn't grow unbounded.
+            "chartMaxPoints": 200,
+            "mqttStreamMaxRows": 100,
         }
         return context
 
@@ -128,9 +231,17 @@ class AssetDetailView(LoginRequiredMixin, TemplateView):
             "measurementsUrl": measurements_url + "?limit=20",
             "eventsUrl": events_url + "?limit=20",
             "chartUrlTemplate": chart_url_template,
-            "chartMetrics": list(ASSET_DETAIL_CHART_METRICS),
+            "chartMetrics": [dict(m) for m in ASSET_DETAIL_CHART_METRICS],
+            # Cap how many points the chart factory keeps in memory; matches
+            # the simulator workspace cap so the two pages behave alike.
+            "chartMaxPoints": 200,
             "dashboardOverviewUrl": reverse("dashboard:overview"),
             "autoRefreshIntervalSeconds": 30,
+            "liveAutoRefreshIntervalSeconds": 120,
+            # Phase 7, Task 3A — per-asset live updates.
+            "websocketPath": (
+                "/ws/dashboard/assets/" + identifier + "/"
+            ) if identifier else "",
         }
         return context
 

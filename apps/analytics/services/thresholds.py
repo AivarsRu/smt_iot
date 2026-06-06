@@ -231,7 +231,7 @@ def _find_open_event(rule, measurement):
 def _create_threshold_event(rule, measurement, value: float):
     description = _describe(rule, measurement, value, normal=False)
     payload = _build_payload(rule, measurement, value)
-    return Event.objects.create(
+    event = Event.objects.create(
         event_type=EventType.THRESHOLD_ANOMALY,
         severity=rule.severity,
         status=EventStatus.OPEN,
@@ -247,6 +247,17 @@ def _create_threshold_event(rule, measurement, value: float):
         source=ANALYTICS_SOURCE,
         payload=payload,
     )
+    _best_effort_publish_anomaly(event)
+    return event
+
+
+def _best_effort_publish_anomaly(event) -> None:
+    """Fan out anomaly creation to the dashboard live-update bus."""
+    try:
+        from apps.dashboard import live_updates
+        live_updates.publish_anomaly_created(event=event)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Anomaly live update skipped: %s", exc)
 
 
 def _update_open_event(event, rule, measurement, value: float) -> None:

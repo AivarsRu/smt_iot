@@ -45,6 +45,15 @@ urlpatterns = [
         name="event-detail",
     ),
 
+    # Phase 7, Task 4 — dedicated simulator workspace tool page. The
+    # main overview stays focused on operational monitoring; everything
+    # related to controlling/configuring the simulator lives here.
+    path(
+        "simulator/",
+        views.SimulatorWorkspaceView.as_view(),
+        name="simulator",
+    ),
+
     path("assets/", views.assets_list_view, name="assets-list"),
     path(
         "assets/new/",

@@ -44,5 +44,33 @@ urlpatterns = [
         "overview/simulator/", overview.overview_simulator_view,
         name="api-overview-simulator",
     ),
+    # Simulator control (Phase 7, Task 3A). The single ``write`` exception to
+    # the otherwise read-only API; see ``apps/api/views.py`` for the auth
+    # rationale and the planned replacement.
+    path(
+        "simulator/status/", views.simulator_status_view,
+        name="api-simulator-status",
+    ),
+    path(
+        "simulator/start/", views.simulator_start_view,
+        name="api-simulator-start",
+    ),
+    path(
+        "simulator/stop/", views.simulator_stop_view,
+        name="api-simulator-stop",
+    ),
+    path(
+        "simulator/run-once/", views.simulator_run_once_view,
+        name="api-simulator-run-once",
+    ),
+    # Phase 7, Task 4 — simulator profile editor endpoints.
+    path(
+        "simulator/profiles/", views.simulator_profile_list_view,
+        name="api-simulator-profile-list",
+    ),
+    path(
+        "simulator/profiles/<str:code>/", views.simulator_profile_detail_view,
+        name="api-simulator-profile-detail",
+    ),
     path("", include(router.urls)),
 ]

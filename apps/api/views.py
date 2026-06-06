@@ -10,10 +10,16 @@ when the serializer dereferences related fields.
 
 from __future__ import annotations
 
+from typing import Optional
+
 from django.db import connection
 from django.shortcuts import get_object_or_404
 from rest_framework import viewsets
-from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.decorators import (
+    action,
+    api_view,
+    permission_classes,
+)
 from rest_framework.exceptions import NotFound
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -581,3 +587,309 @@ class SimulatorRunViewSet(LimitedListMixin, viewsets.ReadOnlyModelViewSet):
 
         qs = apply_datetime_range(qs, request, field="started_at")
         return qs
+
+
+# ── Simulator control endpoints (Phase 7, Task 3A + 3B) ────────────────────
+#
+# Four explicit, narrowly-scoped write endpoints on top of the otherwise
+# read-only API. The views wrap the service layer in
+# :mod:`apps.simulator.services.control` so the same logic is reused by:
+#   * the dashboard simulator panel (HTTP);
+#   * future cron / management commands (Python imports);
+#   * tests (Python imports without HTTP).
+#
+# Phase 7, Task 3B replaces the temporary "no auth" stance from Task 3A
+# with Django's standard authentication and per-permission gating:
+# ``simulator.can_control_simulator`` (or superuser). The permission
+# itself is declared on :class:`apps.simulator.models.SimulatorScenario`
+# (see ``Meta.permissions``); the gate is enforced inside the views via
+# :class:`apps.api.permissions.CanControlSimulator` so the response
+# always preserves the stable JSON shape — DRF's default
+# ``{"detail": "..."}`` is intentionally avoided here.
+
+from apps.api.permissions import (
+    CanControlSimulator,
+    SIMULATOR_CONTROL_PERMISSION,
+    user_can_control_simulator,
+)
+
+
+def _simulator_response(result: dict) -> Response:
+    """Strip the internal ``_http_status`` key and forward it to DRF."""
+    payload = dict(result)
+    http_status = payload.pop("_http_status", 200)
+    return Response(payload, status=http_status)
+
+
+def _simulator_denied_response(*, action: str, authenticated: bool) -> Response:
+    """
+    Build a stable JSON denial response with Latvian user-facing text.
+
+    Returns HTTP 401 for anonymous callers and HTTP 403 for authenticated
+    users who lack ``simulator.can_control_simulator``. The response body
+    matches the standard simulator-control JSON shape so the dashboard
+    JavaScript renders it without special-casing error envelopes.
+    """
+    if authenticated:
+        message = "Lietotājam nav tiesību vadīt simulatoru."
+        status_code = 403
+        status_str = "forbidden"
+        error_code = "permission_denied"
+    else:
+        message = (
+            "Lai vadītu simulatoru, lietotājam jābūt pierakstītam sistēmā."
+        )
+        status_code = 401
+        status_str = "unauthenticated"
+        error_code = "not_authenticated"
+    return Response(
+        {
+            "ok": False,
+            "status": status_str,
+            "message": message,
+            "scenario": None,
+            "last_run_at": None,
+            "is_active": False,
+            "generated_messages": 0,
+            "errors": [error_code],
+        },
+        status=status_code,
+    )
+
+
+def _check_simulator_control_permission(request) -> Optional[Response]:
+    """
+    Run ``CanControlSimulator`` against ``request`` and return a
+    pre-formatted denial response, or ``None`` to allow the action.
+    Keeping the check inside the view (rather than via
+    ``permission_classes``) lets us preserve the stable JSON shape
+    instead of DRF's default ``{"detail": "..."}`` body.
+    """
+    if CanControlSimulator().has_permission(request, None):
+        return None
+    return _simulator_denied_response(
+        action="simulator-control",
+        authenticated=bool(getattr(request.user, "is_authenticated", False)),
+    )
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def simulator_status_view(request):
+    """
+    Return the current simulator status (no side effects).
+
+    Stays publicly readable because the dashboard panel needs to render
+    even for users without control rights — they should see WHY they
+    can't press the buttons. The response always includes a
+    ``can_control`` boolean derived from
+    :func:`apps.api.permissions.user_can_control_simulator` so the
+    frontend can decide whether to enable the action buttons.
+    """
+    from apps.simulator.services.control import get_simulator_status
+    scenario_code = request.query_params.get("scenario") or None
+    body = get_simulator_status(scenario_code)
+    body["can_control"] = user_can_control_simulator(getattr(request, "user", None))
+    body["is_authenticated"] = bool(
+        getattr(getattr(request, "user", None), "is_authenticated", False)
+    )
+    return _simulator_response(body)
+
+
+@api_view(["POST"])
+def simulator_start_view(request):
+    """Mark the resolved simulator scenario as active."""
+    denied = _check_simulator_control_permission(request)
+    if denied is not None:
+        return denied
+    from apps.simulator.services.control import start_simulator
+    scenario_code = (
+        request.data.get("scenario")
+        or request.query_params.get("scenario")
+        or None
+    )
+    body = start_simulator(scenario_code)
+    body["can_control"] = True
+    return _simulator_response(body)
+
+
+@api_view(["POST"])
+def simulator_stop_view(request):
+    """Mark the resolved simulator scenario as inactive."""
+    denied = _check_simulator_control_permission(request)
+    if denied is not None:
+        return denied
+    from apps.simulator.services.control import stop_simulator
+    scenario_code = (
+        request.data.get("scenario")
+        or request.query_params.get("scenario")
+        or None
+    )
+    body = stop_simulator(scenario_code)
+    body["can_control"] = True
+    return _simulator_response(body)
+
+
+@api_view(["POST"])
+def simulator_run_once_view(request):
+    """Execute exactly one bounded simulator cycle synchronously."""
+    denied = _check_simulator_control_permission(request)
+    if denied is not None:
+        return denied
+    from apps.simulator.services.control import run_simulator_once
+    scenario_code = (
+        request.data.get("scenario")
+        or request.query_params.get("scenario")
+        or None
+    )
+    dry_run_raw = (
+        request.data.get("dry_run")
+        if hasattr(request, "data") and "dry_run" in request.data
+        else request.query_params.get("dry_run")
+    )
+    dry_run = parse_bool(dry_run_raw, param="dry_run") if dry_run_raw is not None else False
+    body = run_simulator_once(scenario_code, dry_run=dry_run)
+    body["can_control"] = True
+    return _simulator_response(body)
+
+
+# ── Phase 7, Task 4 — Simulator profile endpoints ─────────────────────────
+#
+# A "profile" is a thin alias over :class:`SimulatorScenario` plus its
+# attached device + metric configuration. The dashboard simulator
+# workspace consumes these endpoints to render the profile selector,
+# the per-metric editor, and to save metric-level overrides.
+#
+# Read access is intentionally permissive (anyone authenticated to view
+# the dashboard can browse profiles) so the workspace page renders for
+# everyone with the same semantics as the simulator status endpoint.
+# Write access (POST/PUT/PATCH) requires the same
+# ``simulator.can_control_simulator`` permission as Start/Stop/Run-once.
+
+
+def _profile_denied_response(*, authenticated: bool) -> Response:
+    """Stable JSON denial body for simulator profile writes."""
+    if authenticated:
+        return Response(
+            {
+                "ok": False,
+                "status": "forbidden",
+                "message": "Lietotājam nav tiesību rediģēt simulatora profilu.",
+                "field_errors": {},
+            },
+            status=403,
+        )
+    return Response(
+        {
+            "ok": False,
+            "status": "unauthenticated",
+            "message": (
+                "Lai rediģētu simulatora profilu, lietotājam jābūt "
+                "pierakstītam sistēmā."
+            ),
+            "field_errors": {},
+        },
+        status=401,
+    )
+
+
+def _check_profile_write_permission(request) -> Optional[Response]:
+    """Reuse the simulator-control permission for profile writes."""
+    if CanControlSimulator().has_permission(request, None):
+        return None
+    return _profile_denied_response(
+        authenticated=bool(getattr(request.user, "is_authenticated", False)),
+    )
+
+
+@api_view(["GET", "POST"])
+@permission_classes([AllowAny])
+def simulator_profile_list_view(request):
+    """
+    ``GET``: list all simulator profiles (public read).
+    ``POST``: create a new profile; requires ``can_control_simulator``.
+    """
+    from apps.simulator.services.profiles import (
+        create_profile, list_profiles, serialise_profile,
+    )
+
+    if request.method == "GET":
+        return Response({
+            "ok": True,
+            "profiles": list_profiles(),
+            "can_control": user_can_control_simulator(getattr(request, "user", None)),
+        })
+
+    denied = _check_profile_write_permission(request)
+    if denied is not None:
+        return denied
+
+    scenario, validation = create_profile(request.data or {})
+    if scenario is None:
+        body = validation.as_response()
+        return Response(body, status=400)
+    return Response(
+        {
+            "ok": True,
+            "status": "created",
+            "message": f"Profils '{scenario.code}' ir izveidots.",
+            "profile": serialise_profile(scenario),
+        },
+        status=201,
+    )
+
+
+@api_view(["GET", "PUT", "PATCH"])
+@permission_classes([AllowAny])
+def simulator_profile_detail_view(request, code: str):
+    """
+    ``GET`` (public): return one profile by code.
+    ``PUT`` / ``PATCH``: update fields + per-metric overrides; requires
+    ``can_control_simulator``. ``PUT`` is treated as a full replacement
+    of the editable surface (top-level fields + metrics list); ``PATCH``
+    only touches the supplied keys.
+    """
+    from apps.simulator.services.profiles import (
+        get_profile, serialise_profile, update_profile, validate_profile_payload,
+    )
+
+    scenario = SimulatorScenario.objects.filter(code=code).first()
+    if scenario is None:
+        return Response(
+            {
+                "ok": False,
+                "status": "not_found",
+                "message": f"Profils '{code}' nav atrasts.",
+                "field_errors": {},
+            },
+            status=404,
+        )
+
+    if request.method == "GET":
+        return Response({
+            "ok": True,
+            "profile": get_profile(code),
+            "can_control": user_can_control_simulator(getattr(request, "user", None)),
+        })
+
+    denied = _check_profile_write_permission(request)
+    if denied is not None:
+        return denied
+
+    partial = request.method == "PATCH"
+    validation = validate_profile_payload(
+        request.data or {}, instance=scenario, partial=partial,
+    )
+    if not validation.ok:
+        return Response(validation.as_response(), status=400)
+
+    profile = update_profile(scenario, request.data or {}, partial=partial)
+    return Response(
+        {
+            "ok": True,
+            "status": "updated",
+            "message": f"Profils '{scenario.code}' ir saglabāts.",
+            "profile": profile,
+        },
+        status=200,
+    )

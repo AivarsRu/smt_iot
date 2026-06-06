@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
+from apps.dashboard import live_updates
 from apps.simulator.services.mqtt_publisher import publish_message
 
 logger = logging.getLogger(__name__)
@@ -241,13 +242,35 @@ class Command(BaseCommand):
     ) -> None:
         # time.monotonic / time.sleep are referenced via the module-level
         # ``time`` import so tests can patch them.
+        #
+        # Phase 7 Task 4 follow-up: long-running mode honors
+        # ``SimulatorScenario.is_active`` so the dashboard "Sākt"/"Apturēt"
+        # buttons actually pause/resume emission for an externally-managed
+        # simulator service. We refresh ``is_active`` from the database
+        # *before* every cycle so a UI flip takes effect on the next tick
+        # without needing a process restart.
         deadline = time.monotonic() + duration_seconds
         cycle_number = 0
         while True:
-            cycle_number += 1
-            self._tally_cycle(self._run_one_cycle(
-                scenario, dry_run, verbosity, cycle_number=cycle_number,
-            ))
+            scenario.refresh_from_db(fields=["is_active", "interval_seconds"])
+            if scenario.is_active:
+                cycle_number += 1
+                self._tally_cycle(self._run_one_cycle(
+                    scenario, dry_run, verbosity, cycle_number=cycle_number,
+                ))
+                # Bump ``last_run_at`` after every successful emit so the
+                # dashboard's "Pēdējais palaidiens" pill stays fresh during
+                # a long-running ``--duration-seconds`` sweep instead of
+                # only updating when ``handle()`` finalises the run.
+                if not dry_run:
+                    type(scenario).objects.filter(pk=scenario.pk).update(
+                        last_run_at=timezone.now(),
+                    )
+            elif verbosity >= 2:
+                self.stdout.write(
+                    f"scenario '{scenario.code}' is paused "
+                    f"(is_active=False); skipping cycle"
+                )
 
             # Do not start a new cycle if the duration has already elapsed.
             if time.monotonic() >= deadline:
@@ -271,6 +294,16 @@ class Command(BaseCommand):
         publish it (normal mode) or print it (dry-run). Returns a CycleResult
         with generated/published counts. Raises on publish failure so the
         caller can mark the SimulatorRun as failed.
+
+        Phase 7 Task 4 follow-up: every successful or failed publish (and
+        every dry-run cycle) is also fanned out as a
+        ``simulator_mqtt_message_sent`` live update so the
+        ``/dashboard/simulator/`` workspace charts and MQTT stream table
+        update in real time when this long-running command is the source
+        of truth (i.e. the standalone simulator service in
+        ``docker-compose.local.yml``). Live-update publishing is
+        best-effort: a websocket / channel-layer failure must NEVER
+        abort the underlying MQTT publish.
         """
         from apps.simulator.services.payload_generator import generate_payload
 
@@ -285,10 +318,25 @@ class Command(BaseCommand):
             if dry_run:
                 self.stdout.write(f"[dry-run] cycle={cycle_number} topic={topic}")
                 self.stdout.write(json.dumps(payload, indent=2))
+                self._publish_live_message(
+                    scenario=scenario, scenario_device=sd, topic=topic,
+                    payload=payload, publish_status="dry_run", error="",
+                )
                 continue
 
-            publish_message(topic, payload)
+            try:
+                publish_message(topic, payload)
+            except Exception as exc:  # noqa: BLE001 — best-effort live update on failure
+                self._publish_live_message(
+                    scenario=scenario, scenario_device=sd, topic=topic,
+                    payload=payload, publish_status="failed", error=str(exc),
+                )
+                raise
             result.published += 1
+            self._publish_live_message(
+                scenario=scenario, scenario_device=sd, topic=topic,
+                payload=payload, publish_status="ok", error="",
+            )
 
             if verbosity >= 2:
                 self.stdout.write(
@@ -297,6 +345,35 @@ class Command(BaseCommand):
                 )
 
         return result
+
+    @staticmethod
+    def _publish_live_message(
+        *, scenario, scenario_device, topic, payload, publish_status, error,
+    ) -> None:
+        """
+        Best-effort wrapper around
+        :func:`apps.dashboard.live_updates.publish_simulator_mqtt_message`.
+        Mirrors the helper in :mod:`apps.simulator.services.control` so
+        the standalone runner emits the same workspace events as the
+        synchronous "Run once" API path.
+        """
+        try:
+            device = getattr(scenario_device, "device", None)
+            asset = getattr(device, "asset", None) if device else None
+            live_updates.publish_simulator_mqtt_message(
+                scenario=scenario,
+                device=device,
+                asset=asset,
+                topic=topic,
+                payload_dict=payload,
+                publish_status=publish_status,
+                error=error,
+                message_id=(payload or {}).get("message_id", ""),
+            )
+        except Exception:  # noqa: BLE001 — never raise from a live update
+            logger.exception(
+                "publish_simulator_mqtt_message failed (best-effort, ignored).",
+            )
 
     # ── Output helpers ───────────────────────────────────────────────────────
 

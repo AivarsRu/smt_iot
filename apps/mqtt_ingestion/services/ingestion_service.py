@@ -407,6 +407,15 @@ def _run_pipeline(
         )
         analytics_errors.extend(recovery_errors)
 
+    # 21. Best-effort dashboard live updates. Errors here are swallowed by
+    #     the publisher itself so a Channels outage cannot break ingestion.
+    _publish_live_updates_for_ingestion(
+        raw_message=raw_message,
+        asset=asset,
+        device=device,
+        total_stored=total_stored,
+    )
+
     return IngestionResult(
         success=measurements_created + measurements_updated > 0,
         duplicate=False,
@@ -417,6 +426,41 @@ def _run_pipeline(
         analytics_events_created=analytics_events_created,
         errors=analytics_errors,
     )
+
+
+def _publish_live_updates_for_ingestion(
+    *,
+    raw_message,
+    asset,
+    device,
+    total_stored: int,
+) -> None:
+    """
+    Best-effort dashboard fan-out after one MQTT message has been
+    processed. Wrapped in a single ``try`` so any error here is logged
+    and silenced — telemetry persistence is already committed.
+    """
+    try:
+        from apps.dashboard import live_updates
+
+        # Always announce the raw message arrival (success or failure)
+        # so the diagnostics panel can refresh.
+        live_updates.publish_raw_message_received(
+            raw_message=raw_message, asset=asset, device=device,
+        )
+
+        if total_stored > 0:
+            live_updates.publish_telemetry_received(
+                asset=asset,
+                device=device,
+                raw_message=raw_message,
+                measurements_count=total_stored,
+            )
+            asset_state = AssetState.objects.filter(asset=asset).first()
+            if asset_state is not None:
+                live_updates.publish_asset_state_updated(asset_state=asset_state)
+    except Exception as exc:  # noqa: BLE001 — never raise from a fan-out
+        logger.warning("Live update fan-out failed: %s", exc)
 
 
 def _close_communication_timeout_for_recovered_device(

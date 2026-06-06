@@ -56,26 +56,26 @@
     </div>
   </section>
 
-  {# ── Simulator ─────────────────────────────────────────────────────── #}
-  <section class="dashboard-section" aria-labelledby="simulator-heading">
-    <div class="section-header">
-      <h2 id="simulator-heading" class="section-header__title">Simulators</h2>
-      <p class="section-header__hint">
-        Skaitļi nāk no <code>/api/overview/simulator/</code>.
-        Sākt/apturēt vadību šajā fāzē nav.
-      </p>
-    </div>
-    <div class="counts-row" data-role="simulator-counts"></div>
-    <div data-role="simulator-runs-wrapper">
-      <h3 class="subsection-title">Pēdējie palaidieni</h3>
-      <div class="state state--loading" data-role="simulator-runs-state">Ielādē…</div>
-    </div>
+  {% comment %}
+    Phase 7, Task 4 — the simulator control panel, run history, and
+    the "Pēdējais simulators" summary card have been moved to the
+    dedicated workspace at /dashboard/simulator/. The overview page now
+    focuses on real operational monitoring only. The dashboard config
+    still carries a websocket path so non-simulator events can still
+    nudge the overview tables.
+  {% endcomment %}
+
+  {# Live status indicator. #}
+  <section class="dashboard-section" aria-label="Tiešraides savienojums">
+    <p class="dashboard-live-status">
+      Tiešraides savienojums:
+      <span class="status-pill" data-role="live-status-pill">…</span>
+    </p>
   </section>
 {% endblock %}
 
 {% block dashboard_config %}
-  {# All endpoint URLs and small config flags are passed to dashboard.js
-     via this JSON script block. dashboard.js reads it via getElementById. #}
+  {# Endpoint URLs + flags consumed by dashboard.js via getElementById. #}
   {{ dashboard_config|json_script:"dashboard-config" }}
 {% endblock %}
 

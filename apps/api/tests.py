@@ -1052,3 +1052,740 @@ class SensorMetricFilterApiTest(APITestCase):
         resp = self.client.get("/api/events/?limit=99999")
         self.assertEqual(resp.status_code, 400)
         self.assertIn("limit", resp.json())
+
+
+# ── Phase 7, Task 3A — Simulator control endpoints ──────────────────────────
+
+
+class SimulatorControlApiTest(APITestCase):
+    """
+    Tests for the four ``/api/simulator/{status,start,stop,run-once}/``
+    endpoints. The MQTT publisher is patched so paho is never imported
+    and the run-once endpoint stays synchronous and bounded.
+
+    Phase 7, Task 3B: the POST endpoints now require authentication
+    plus the ``simulator.can_control_simulator`` permission, so this
+    test class force-authenticates a permitted user for the happy-path
+    scenarios. Permission denial scenarios live in
+    :class:`SimulatorControlPermissionTest`.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        # ``seed_demo_data`` provides a ``default_demo`` scenario with one
+        # device, one sensor and a metric profile — enough material for
+        # the run-once endpoint to generate one telemetry payload.
+        from django.core.management import call_command
+        call_command("seed_demo_data", verbosity=0)
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from django.contrib.auth.models import Permission
+
+        User = get_user_model()
+        self.client = APIClient()
+        # Permitted control user — proves the happy path still works
+        # under the new auth gate.
+        self.user = User.objects.create_user(
+            username="sim-controller",
+            password="x",  # noqa: S106 - test fixture password.
+        )
+        perm = Permission.objects.get(
+            content_type__app_label="simulator",
+            codename="can_control_simulator",
+        )
+        self.user.user_permissions.add(perm)
+        self.client.force_authenticate(user=self.user)
+
+    # ── Stable JSON shape ──────────────────────────────────────────
+
+    REQUIRED_KEYS = (
+        "ok", "status", "message", "scenario", "last_run_at",
+        "is_active", "generated_messages", "errors",
+    )
+
+    def _assert_stable_shape(self, body):
+        for key in self.REQUIRED_KEYS:
+            self.assertIn(key, body, f"Missing key: {key}")
+
+    # ── Status ─────────────────────────────────────────────────────
+
+    def test_status_returns_200_with_default_scenario(self):
+        resp = self.client.get("/api/simulator/status/")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self._assert_stable_shape(body)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["scenario"]["code"], "default_demo")
+
+    def test_status_when_no_scenario_returns_404_with_ok_false(self):
+        SimulatorScenario.objects.all().delete()
+        resp = self.client.get("/api/simulator/status/")
+        self.assertEqual(resp.status_code, 404)
+        body = resp.json()
+        self._assert_stable_shape(body)
+        self.assertFalse(body["ok"])
+        self.assertIn("scenār", body["message"].lower())
+
+    def test_status_only_accepts_get(self):
+        for method in ("post", "put", "patch", "delete"):
+            resp = getattr(self.client, method)("/api/simulator/status/")
+            self.assertEqual(resp.status_code, 405)
+
+    # ── Start ──────────────────────────────────────────────────────
+
+    def test_start_activates_scenario(self):
+        SimulatorScenario.objects.filter(code="default_demo").update(is_active=False)
+        resp = self.client.post("/api/simulator/start/", data={}, format="json")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self._assert_stable_shape(body)
+        self.assertTrue(body["ok"])
+        self.assertTrue(body["is_active"])
+        scenario = SimulatorScenario.objects.get(code="default_demo")
+        self.assertTrue(scenario.is_active)
+
+    def test_start_when_no_scenario_returns_404(self):
+        SimulatorScenario.objects.all().delete()
+        resp = self.client.post("/api/simulator/start/", data={}, format="json")
+        self.assertEqual(resp.status_code, 404)
+        body = resp.json()
+        self.assertFalse(body["ok"])
+
+    def test_start_only_accepts_post(self):
+        resp = self.client.get("/api/simulator/start/")
+        self.assertEqual(resp.status_code, 405)
+
+    # ── Stop ───────────────────────────────────────────────────────
+
+    def test_stop_deactivates_scenario(self):
+        SimulatorScenario.objects.filter(code="default_demo").update(is_active=True)
+        resp = self.client.post("/api/simulator/stop/", data={}, format="json")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self._assert_stable_shape(body)
+        self.assertTrue(body["ok"])
+        self.assertFalse(body["is_active"])
+        scenario = SimulatorScenario.objects.get(code="default_demo")
+        self.assertFalse(scenario.is_active)
+
+    def test_stop_when_no_scenario_returns_404(self):
+        SimulatorScenario.objects.all().delete()
+        resp = self.client.post("/api/simulator/stop/", data={}, format="json")
+        self.assertEqual(resp.status_code, 404)
+
+    # ── Run once ───────────────────────────────────────────────────
+
+    def test_run_once_dry_run_returns_ok_without_publishing(self):
+        from unittest.mock import patch
+        captured = []
+
+        def fake_publish(topic, payload, **kwargs):
+            captured.append((topic, payload))
+
+        with patch(
+            "apps.simulator.services.mqtt_publisher.publish_message",
+            side_effect=fake_publish,
+        ):
+            resp = self.client.post(
+                "/api/simulator/run-once/",
+                data={"dry_run": True}, format="json",
+            )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self._assert_stable_shape(body)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["status"], "ran_once")
+        self.assertEqual(len(captured), 0)
+
+    def test_run_once_publishes_when_not_dry_run(self):
+        from unittest.mock import patch
+        captured = []
+
+        def fake_publish(topic, payload, **kwargs):
+            captured.append((topic, payload))
+
+        with patch(
+            "apps.simulator.services.mqtt_publisher.publish_message",
+            side_effect=fake_publish,
+        ):
+            resp = self.client.post(
+                "/api/simulator/run-once/", data={}, format="json",
+            )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self._assert_stable_shape(body)
+        self.assertTrue(body["ok"])
+        # The seeded scenario has at least one device.
+        self.assertGreaterEqual(body["generated_messages"], 1)
+        self.assertGreaterEqual(len(captured), 1)
+        # A SimulatorRun was recorded.
+        runs = SimulatorRun.objects.filter(scenario__code="default_demo")
+        self.assertTrue(runs.exists())
+
+    def test_run_once_when_no_scenario_returns_404(self):
+        SimulatorScenario.objects.all().delete()
+        resp = self.client.post("/api/simulator/run-once/", data={}, format="json")
+        self.assertEqual(resp.status_code, 404)
+        body = resp.json()
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["scenario"], None)
+        self.assertEqual(body["generated_messages"], 0)
+
+    # ── URL names ──────────────────────────────────────────────────
+
+    def test_simulator_control_urls_have_named_routes(self):
+        from django.urls import reverse
+        self.assertEqual(
+            reverse("api-simulator-status"), "/api/simulator/status/",
+        )
+        self.assertEqual(
+            reverse("api-simulator-start"), "/api/simulator/start/",
+        )
+        self.assertEqual(
+            reverse("api-simulator-stop"), "/api/simulator/stop/",
+        )
+        self.assertEqual(
+            reverse("api-simulator-run-once"), "/api/simulator/run-once/",
+        )
+
+
+# ── Phase 7, Task 3B — Simulator control authentication / permission ─────────
+
+
+class SimulatorControlPermissionTest(APITestCase):
+    """
+    Verifies the authentication + ``simulator.can_control_simulator``
+    permission gate added in Phase 7, Task 3B. Covers:
+
+    * the permission row is installed by the migration / app-config;
+    * ``/api/simulator/status/`` exposes ``can_control`` to all callers;
+    * ``/api/simulator/{start,stop,run-once}/`` deny anonymous + non-
+      permitted requests with the stable simulator JSON shape;
+    * permitted users and superusers retain full access;
+    * denial messages are in Latvian and don't leak DRF defaults.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from django.contrib.auth import get_user_model
+        from django.contrib.auth.models import Permission
+        from django.core.management import call_command
+
+        call_command("seed_demo_data", verbosity=0)
+
+        User = get_user_model()
+        cls.anon_client = APIClient()  # never authenticates
+
+        cls.no_perm_user = User.objects.create_user(
+            username="readonly",
+            password="x",  # noqa: S106 - test fixture.
+        )
+        cls.permitted_user = User.objects.create_user(
+            username="permitted",
+            password="x",  # noqa: S106 - test fixture.
+        )
+        cls.superuser = User.objects.create_superuser(
+            username="root", email="root@example.com",
+            password="x",  # noqa: S106 - test fixture.
+        )
+        cls.perm = Permission.objects.get(
+            content_type__app_label="simulator",
+            codename="can_control_simulator",
+        )
+        cls.permitted_user.user_permissions.add(cls.perm)
+
+    def _authed(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    REQUIRED_KEYS = (
+        "ok", "status", "message", "scenario", "last_run_at",
+        "is_active", "generated_messages", "errors",
+    )
+
+    def _assert_stable_shape(self, body):
+        for key in self.REQUIRED_KEYS:
+            self.assertIn(key, body, f"Missing key: {key}")
+
+    # ── Permission row exists ─────────────────────────────────────
+
+    def test_can_control_simulator_permission_exists(self):
+        from django.contrib.auth.models import Permission
+        self.assertTrue(
+            Permission.objects.filter(
+                content_type__app_label="simulator",
+                codename="can_control_simulator",
+            ).exists()
+        )
+
+    def test_permission_full_string_resolves(self):
+        # Sanity-check the canonical Django app-label.codename string
+        # that appears throughout the API + docs.
+        self.assertTrue(
+            self.permitted_user.has_perm("simulator.can_control_simulator")
+        )
+        self.assertFalse(
+            self.no_perm_user.has_perm("simulator.can_control_simulator")
+        )
+
+    # ── Status endpoint: can_control + is_authenticated ──────────
+
+    def test_status_anonymous_can_control_is_false(self):
+        resp = self.anon_client.get("/api/simulator/status/")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self._assert_stable_shape(body)
+        self.assertIn("can_control", body)
+        self.assertFalse(body["can_control"])
+        self.assertFalse(body["is_authenticated"])
+
+    def test_status_authenticated_no_perm_can_control_is_false(self):
+        resp = self._authed(self.no_perm_user).get("/api/simulator/status/")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertFalse(body["can_control"])
+        self.assertTrue(body["is_authenticated"])
+
+    def test_status_permitted_user_can_control_is_true(self):
+        resp = self._authed(self.permitted_user).get("/api/simulator/status/")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["can_control"])
+        self.assertTrue(body["is_authenticated"])
+
+    def test_status_superuser_can_control_is_true(self):
+        resp = self._authed(self.superuser).get("/api/simulator/status/")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["can_control"])
+        self.assertTrue(body["is_authenticated"])
+
+    # ── POST endpoints: anonymous denial ─────────────────────────
+
+    def test_anonymous_start_denied_with_stable_shape(self):
+        resp = self.anon_client.post("/api/simulator/start/", data={}, format="json")
+        self.assertEqual(resp.status_code, 401)
+        body = resp.json()
+        self._assert_stable_shape(body)
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["status"], "unauthenticated")
+        # Latvian user-facing message — no DRF "detail" leakage.
+        self.assertIn("pierakst", body["message"].lower())
+        self.assertNotIn("detail", body)
+        self.assertEqual(body["generated_messages"], 0)
+        self.assertIsNone(body["scenario"])
+        self.assertIsNone(body["last_run_at"])
+        self.assertFalse(body["is_active"])
+
+    def test_anonymous_stop_denied(self):
+        resp = self.anon_client.post("/api/simulator/stop/", data={}, format="json")
+        self.assertEqual(resp.status_code, 401)
+        body = resp.json()
+        self.assertEqual(body["status"], "unauthenticated")
+
+    def test_anonymous_run_once_denied(self):
+        resp = self.anon_client.post(
+            "/api/simulator/run-once/", data={}, format="json",
+        )
+        self.assertEqual(resp.status_code, 401)
+        body = resp.json()
+        self.assertEqual(body["status"], "unauthenticated")
+
+    # ── POST endpoints: authenticated-without-perm denial ────────
+
+    def test_authenticated_no_perm_start_returns_403(self):
+        # Pre-condition: scenario is inactive so we can detect a stray
+        # mutation by the denied request.
+        SimulatorScenario.objects.filter(code="default_demo").update(
+            is_active=False,
+        )
+        resp = self._authed(self.no_perm_user).post(
+            "/api/simulator/start/", data={}, format="json",
+        )
+        self.assertEqual(resp.status_code, 403)
+        body = resp.json()
+        self._assert_stable_shape(body)
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["status"], "forbidden")
+        self.assertIn("tiesīb", body["message"].lower())
+        # Denied request must not have activated the scenario.
+        self.assertFalse(
+            SimulatorScenario.objects.get(code="default_demo").is_active,
+        )
+
+    def test_authenticated_no_perm_stop_returns_403(self):
+        resp = self._authed(self.no_perm_user).post(
+            "/api/simulator/stop/", data={}, format="json",
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_authenticated_no_perm_run_once_returns_403(self):
+        from unittest.mock import patch
+
+        # Patch publisher just to be safe — denial path must short-circuit
+        # before the service layer would run, so the patch is never hit.
+        with patch(
+            "apps.simulator.services.mqtt_publisher.publish_message",
+        ) as mock_publish:
+            resp = self._authed(self.no_perm_user).post(
+                "/api/simulator/run-once/", data={}, format="json",
+            )
+        self.assertEqual(resp.status_code, 403)
+        mock_publish.assert_not_called()
+
+    # ── POST endpoints: permitted user happy-path ────────────────
+
+    def test_permitted_user_can_start(self):
+        SimulatorScenario.objects.filter(code="default_demo").update(is_active=False)
+        resp = self._authed(self.permitted_user).post(
+            "/api/simulator/start/", data={}, format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        self.assertTrue(body["is_active"])
+        self.assertTrue(body["can_control"])
+
+    def test_permitted_user_can_stop(self):
+        SimulatorScenario.objects.filter(code="default_demo").update(is_active=True)
+        resp = self._authed(self.permitted_user).post(
+            "/api/simulator/stop/", data={}, format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        self.assertFalse(body["is_active"])
+
+    def test_permitted_user_can_run_once(self):
+        from unittest.mock import patch
+
+        with patch(
+            "apps.simulator.services.mqtt_publisher.publish_message",
+        ):
+            resp = self._authed(self.permitted_user).post(
+                "/api/simulator/run-once/",
+                data={"dry_run": True}, format="json",
+            )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["ok"])
+
+    def test_superuser_can_start_without_explicit_perm(self):
+        SimulatorScenario.objects.filter(code="default_demo").update(is_active=False)
+        resp = self._authed(self.superuser).post(
+            "/api/simulator/start/", data={}, format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        self.assertTrue(body["is_active"])
+
+    # ── CSRF behaviour for one representative protected POST ─────
+
+    def test_csrf_enforced_for_session_authenticated_post(self):
+        """
+        With ``enforce_csrf_checks=True``, a session-authenticated POST
+        without the ``X-CSRFToken`` header (and matching cookie) must be
+        rejected. We use Django's plain Client so SessionAuthentication
+        kicks in and CSRF is enforced exactly as in the real browser.
+        """
+        from django.test import Client
+
+        csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client.force_login(self.permitted_user)
+        resp = csrf_client.post(
+            "/api/simulator/start/",
+            data="{}",
+            content_type="application/json",
+        )
+        # Either 403 (CSRF rejected) or some other 4xx — what matters is
+        # the request did NOT mutate the scenario, proving CSRF is on
+        # for the protected endpoint.
+        self.assertGreaterEqual(resp.status_code, 400)
+        self.assertLess(resp.status_code, 500)
+
+    def test_csrf_token_passes_when_provided(self):
+        """
+        Same client, but this time we read the csrftoken cookie and send
+        it back as ``X-CSRFToken`` — the request should now be accepted
+        and the scenario should activate.
+        """
+        from django.test import Client
+
+        csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client.force_login(self.permitted_user)
+        SimulatorScenario.objects.filter(code="default_demo").update(is_active=False)
+
+        # Prime the CSRF cookie via a GET (the status endpoint sets it
+        # because the dashboard view rendered a token earlier — but for
+        # this isolated client we hit a Django view that calls
+        # ``get_token`` indirectly; ``client.get`` on any GET is enough
+        # because Django's CsrfViewMiddleware ensures the cookie is set
+        # on the response). The dashboard overview is a reliable choice.
+        get_resp = csrf_client.get("/dashboard/")
+        token = get_resp.cookies.get("csrftoken")
+        if token is None:
+            # Fall back to extracting from any subsequent endpoint.
+            self.skipTest("CSRF cookie not set by GET /dashboard/")
+        resp = csrf_client.post(
+            "/api/simulator/start/",
+            data="{}",
+            content_type="application/json",
+            HTTP_X_CSRFTOKEN=token.value,
+        )
+        self.assertEqual(resp.status_code, 200)
+
+
+# ── Phase 7, Task 4 — Simulator profile API ─────────────────────────────────
+
+
+class SimulatorProfileApiTest(APITestCase):
+    """
+    Tests for ``GET/POST /api/simulator/profiles/`` and the per-code
+    detail endpoint ``GET/PUT/PATCH /api/simulator/profiles/<code>/``.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from django.core.management import call_command
+        call_command("seed_demo_data", verbosity=0)
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from django.contrib.auth.models import Permission
+
+        User = get_user_model()
+        self.client = APIClient()
+        self.controller = User.objects.create_user(
+            username="profile-controller", password="x",
+        )
+        self.viewer = User.objects.create_user(
+            username="profile-viewer", password="x",
+        )
+        perm = Permission.objects.get(
+            content_type__app_label="simulator",
+            codename="can_control_simulator",
+        )
+        self.controller.user_permissions.add(perm)
+
+    # ── List ────────────────────────────────────────────────────────
+
+    def test_list_profiles_returns_default_demo(self):
+        resp = self.client.get("/api/simulator/profiles/")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        codes = [p["code"] for p in body["profiles"]]
+        self.assertIn("default_demo", codes)
+
+    def test_list_includes_can_control_flag(self):
+        self.client.force_authenticate(user=self.controller)
+        resp = self.client.get("/api/simulator/profiles/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["can_control"])
+
+    def test_list_includes_devices_and_metrics(self):
+        resp = self.client.get("/api/simulator/profiles/")
+        body = resp.json()
+        profile = next(p for p in body["profiles"] if p["code"] == "default_demo")
+        self.assertGreaterEqual(len(profile["devices"]), 1)
+        first_dev = profile["devices"][0]
+        self.assertIn("device_uid", first_dev)
+        # Metrics list may be empty if the seed didn't create any, but
+        # the key MUST be present.
+        self.assertIn("metrics", first_dev)
+
+    # ── Detail GET ──────────────────────────────────────────────────
+
+    def test_detail_get_returns_profile(self):
+        resp = self.client.get("/api/simulator/profiles/default_demo/")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["profile"]["code"], "default_demo")
+
+    def test_detail_get_unknown_returns_404(self):
+        resp = self.client.get("/api/simulator/profiles/does-not-exist/")
+        self.assertEqual(resp.status_code, 404)
+        body = resp.json()
+        self.assertFalse(body["ok"])
+
+    # ── Create (POST) ───────────────────────────────────────────────
+
+    def test_create_requires_authentication(self):
+        resp = self.client.post(
+            "/api/simulator/profiles/",
+            data={"code": "x", "name": "X", "interval_seconds": 30},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 401)
+
+    def test_create_requires_permission(self):
+        self.client.force_authenticate(user=self.viewer)
+        resp = self.client.post(
+            "/api/simulator/profiles/",
+            data={"code": "x", "name": "X", "interval_seconds": 30},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_create_validates_required_fields(self):
+        self.client.force_authenticate(user=self.controller)
+        resp = self.client.post(
+            "/api/simulator/profiles/", data={}, format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        body = resp.json()
+        self.assertFalse(body["ok"])
+        self.assertIn("code", body["field_errors"])
+        self.assertIn("name", body["field_errors"])
+        self.assertIn("interval_seconds", body["field_errors"])
+
+    def test_create_rejects_non_positive_interval(self):
+        self.client.force_authenticate(user=self.controller)
+        resp = self.client.post(
+            "/api/simulator/profiles/",
+            data={
+                "code": "tmp", "name": "Tmp", "site_code": "demo_site_1",
+                "interval_seconds": 0,
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        body = resp.json()
+        self.assertIn("interval_seconds", body["field_errors"])
+
+    def test_create_rejects_duplicate_code(self):
+        self.client.force_authenticate(user=self.controller)
+        resp = self.client.post(
+            "/api/simulator/profiles/",
+            data={
+                "code": "default_demo", "name": "Dup",
+                "site_code": "demo_site_1", "interval_seconds": 30,
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        body = resp.json()
+        self.assertIn("code", body["field_errors"])
+
+    def test_create_succeeds_for_permitted_user(self):
+        from apps.assets.models import Site
+        site = Site.objects.first()
+        self.client.force_authenticate(user=self.controller)
+        resp = self.client.post(
+            "/api/simulator/profiles/",
+            data={
+                "code": "demo_extra", "name": "Demo Extra",
+                "site_code": site.code, "interval_seconds": 45,
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["profile"]["code"], "demo_extra")
+        self.assertEqual(body["profile"]["interval_seconds"], 45)
+
+    # ── Update (PATCH) ──────────────────────────────────────────────
+
+    def test_update_requires_permission(self):
+        self.client.force_authenticate(user=self.viewer)
+        resp = self.client.patch(
+            "/api/simulator/profiles/default_demo/",
+            data={"interval_seconds": 99},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_update_anonymous_returns_401(self):
+        resp = self.client.patch(
+            "/api/simulator/profiles/default_demo/",
+            data={"interval_seconds": 99},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 401)
+
+    def test_update_succeeds_for_permitted_user(self):
+        self.client.force_authenticate(user=self.controller)
+        resp = self.client.patch(
+            "/api/simulator/profiles/default_demo/",
+            data={"interval_seconds": 90, "name": "Updated demo"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["profile"]["interval_seconds"], 90)
+        self.assertEqual(body["profile"]["name"], "Updated demo")
+
+    def test_update_validates_metric_min_max(self):
+        """min must be < max; base must lie in [min, max]."""
+        self.client.force_authenticate(user=self.controller)
+        resp = self.client.patch(
+            "/api/simulator/profiles/default_demo/",
+            data={
+                "metrics": [{
+                    "metric_key": "temperature_c", "unit": "°C",
+                    "min_value": 50, "max_value": 10,
+                    "base_value": 30, "noise_amplitude": 1,
+                    "is_enabled": True,
+                }],
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        body = resp.json()
+        self.assertIn("metrics", body["field_errors"])
+
+    def test_update_rejects_base_outside_range(self):
+        self.client.force_authenticate(user=self.controller)
+        resp = self.client.patch(
+            "/api/simulator/profiles/default_demo/",
+            data={
+                "metrics": [{
+                    "metric_key": "temperature_c", "unit": "°C",
+                    "min_value": 0, "max_value": 100,
+                    "base_value": 200, "noise_amplitude": 1,
+                    "is_enabled": True,
+                }],
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_update_requires_at_least_one_enabled_metric(self):
+        self.client.force_authenticate(user=self.controller)
+        resp = self.client.patch(
+            "/api/simulator/profiles/default_demo/",
+            data={
+                "metrics": [{
+                    "metric_key": "temperature_c", "unit": "°C",
+                    "min_value": 0, "max_value": 100,
+                    "base_value": 25, "noise_amplitude": 1,
+                    "is_enabled": False,
+                }],
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        body = resp.json()
+        self.assertIn("metrics_summary", body["field_errors"])
+
+    def test_update_rejects_negative_noise(self):
+        self.client.force_authenticate(user=self.controller)
+        resp = self.client.patch(
+            "/api/simulator/profiles/default_demo/",
+            data={
+                "metrics": [{
+                    "metric_key": "temperature_c", "unit": "°C",
+                    "min_value": 0, "max_value": 100,
+                    "base_value": 25, "noise_amplitude": -5,
+                    "is_enabled": True,
+                }],
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)

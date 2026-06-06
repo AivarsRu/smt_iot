@@ -237,7 +237,171 @@ curl "http://localhost:8000/api/simulator-scenarios/"
 curl "http://localhost:8000/api/simulator-runs/?scenario=default_demo&status=completed"
 ```
 
-> **Piezīme:** šajā fāzē **netiek** ieviestas simulatora `start` / `stop` API darbības. Simulatora palaišana joprojām notiek caur `python manage.py run_simulator ...`. Tas tiek darīts apzināti, lai REST līnija paliek stabila un tikai-lasīšanas.
+## Simulatora vadības galapunkti (Phase 7, Task 3A + 3B)
+
+REST līnija pārējās daļās paliek tikai-lasīšanas; simulatora vadība ir vienīgais, ja
+ietverts, rakstīšanas izņēmums. Visi četri galapunkti dalās ar vienu un to pašu
+JSON struktūru.
+
+| Galapunkts                          | Metode | Maršruta nosaukums           | Atļauja                                              | Apraksts                                                |
+| ----------------------------------- | ------ | ---------------------------- | ---------------------------------------------------- | ------------------------------------------------------- |
+| `GET  /api/simulator/status/`       | `GET`  | `api-simulator-status`       | Pieejams visiem (atgriež `can_control`)              | Atgriež pašreizējo simulatora statusu, scenāriju un pēdējā palaidiena diagnostiku. |
+| `POST /api/simulator/start/`        | `POST` | `api-simulator-start`        | `simulator.can_control_simulator` vai superuser      | Iezīmē scenāriju kā aktīvu (`is_active = True`). Idempotents. |
+| `POST /api/simulator/stop/`         | `POST` | `api-simulator-stop`         | `simulator.can_control_simulator` vai superuser      | Iezīmē scenāriju kā neaktīvu. Idempotents.              |
+| `POST /api/simulator/run-once/`     | `POST` | `api-simulator-run-once`     | `simulator.can_control_simulator` vai superuser      | Sinhroni izpilda vienu ierobežotu ciklu (vienu ziņojumu uz katru aktīvo `SimulatorScenarioDevice`). |
+
+Visi veiksmīgu darbību atbildes kodi ir `200 OK`, vai `404 Not Found`,
+ja neviens scenārijs neeksistē. JSON forma ir stabila:
+
+```json
+{
+  "ok": true,
+  "status": "started",
+  "message": "Simulators palaists scenārijam 'default_demo'.",
+  "scenario": {
+    "id": "…",
+    "code": "default_demo",
+    "name": "Default Demo Scenario",
+    "site_code": "default_demo",
+    "interval_seconds": 60
+  },
+  "last_run_at": "2026-06-06T10:55:00Z",
+  "is_active": true,
+  "generated_messages": 1,
+  "errors": [],
+  "can_control": true
+}
+```
+
+Lauku skaidrojums:
+
+- `ok` — `true`, ja darbība izpildīta veiksmīgi (vai bija idempotenti pareiza), citādi `false`.
+- `status` — `"ok" | "started" | "stopped" | "ran_once" | "forbidden" | "unauthenticated"`.
+- `message` — latviešu valodā formēts paziņojums, ko parāda dashboarda panelis.
+- `scenario` — atrastais scenārijs (vai `null`, ja neviens nav atrasts).
+- `last_run_at` — pēdējais `SimulatorScenario.last_run_at` ISO timestamp vai `null`.
+- `is_active` — pašreizējais scenārija aktīvuma karogs.
+- `generated_messages` — `run-once` gadījumā ģenerēto ziņojumu skaits; pārējos
+  gadījumos pēdējā palaidiena `messages_published`.
+- `errors` — kļūdu saraksts (parasti tukšs; atteikuma gadījumā satur kodu, piem., `"permission_denied"`).
+- `can_control` — `true`, ja pašreizējais lietotājs drīkst izmantot `start`/`stop`/`run-once` (superuser vai
+  ar `simulator.can_control_simulator` atļauju). Anonīmiem lietotājiem un autentificētiem lietotājiem
+  bez atļaujas vienmēr ir `false`. Pieejams gan veiksmīgās, gan atteikuma atbildēs.
+- `is_authenticated` — papildu logical karogs `status` atbildē, lai dashboarda JS varētu izvēlēties
+  pareizo latviešu paziņojumu starp “lūdzam pierakstīties” un “nav atļaujas”.
+
+Scenārija izvēles kārtība (visiem četriem galapunktiem):
+
+1. `?scenario=…` vaicājuma parametrs vai POST ķermeņa lauks.
+2. `default_demo`, ja tas eksistē.
+3. Pirmais scenārijs pēc `code` alfabētiskās kārtas.
+4. Ja neviena nav, atbilde ir `404` ar `ok=false`.
+
+### Autentifikācija un atļaujas (Phase 7, Task 3B)
+
+`POST /api/simulator/start/`, `POST /api/simulator/stop/` un `POST /api/simulator/run-once/`
+ir aizsargāti ar Django autentifikāciju un atļauju `simulator.can_control_simulator`.
+`GET /api/simulator/status/` paliek lasāms visiem (arī anonīmiem) klientiem,
+lai dashboards varētu rādīt panelu un pareizi atspoguļot, kāpēc pogas ir atspējotas.
+
+Atļauja ir definēta kā Django `Meta.permissions` ieraksts uz `apps.simulator.models.SimulatorScenario`:
+
+```python
+class Meta:
+    permissions = [
+        ("can_control_simulator", "Var vadīt simulatoru"),
+    ]
+```
+
+**Kā piešķirt atļauju.**
+
+- Django admin: atver lietotāju vai grupu, sadaļā **User permissions** / **Group permissions**
+  pievieno `simulator | simulator scenario | Var vadīt simulatoru`.
+- Django shell:
+
+  ```bash
+  docker compose -f docker-compose.local.yml exec web python manage.py shell
+  ```
+
+  ```python
+  from django.contrib.auth import get_user_model
+  from django.contrib.auth.models import Permission
+  user = get_user_model().objects.get(username="operator")
+  perm = Permission.objects.get(content_type__app_label="simulator",
+                                codename="can_control_simulator")
+  user.user_permissions.add(perm)  # vai izveidojiet grupu un pievienojiet to.
+  ```
+
+- Superuser (`is_superuser=True`) **vienmēr** drīkst vadīt simulatoru, neatkarīgi no grupām.
+
+**Atteikuma atbildes.** Atteikums saglabā to pašu JSON formu, lai dashboarda
+JS varētu attēlot ziņojumu bez papildu zaru:
+
+| Lietotājs                    | HTTP | `ok`  | `status`         | `message` (LV)                                                          |
+| ---------------------------- | ---- | ----- | ---------------- | ------------------------------------------------------------------------ |
+| Anonīms                      | 401  | false | `unauthenticated`| `Lai vadītu simulatoru, lietotājam jābūt pierakstītam sistēmā.`         |
+| Autentificēts, bez atļaujas  | 403  | false | `forbidden`      | `Lietotājam nav tiesību vadīt simulatoru.`                              |
+
+Atteikuma atbildes neiekļauj DRF noklusēto `detail` lauku — tā vietā
+saglabājam stabilo simulatora vadības formu (`scenario=null`, `last_run_at=null`,
+`is_active=false`, `generated_messages=0`, `errors=["not_authenticated"|"permission_denied"]`).
+
+> **Izpildes modelis.** `start` un `stop` **neuzsāk** ilgstošu Django web
+> procesa darbu, asinhronu uzdevumu vai `subprocess`. Tie tikai atjaunina
+> `SimulatorScenario.is_active` datubāzē. Faktisko ģenerāciju joprojām veic
+> `python manage.py run_simulator …` (cron / systemd timer). `run-once`
+> sinhroni izpilda **vienu** ciklu un atgriež rezultātu.
+
+> **CSRF.** Tā kā POST galapunkti tagad iet caur `SessionAuthentication`,
+> Django CSRF aizsardzība tiek piemērota. Dashboarda JavaScript pievieno
+> `X-CSRFToken` galveni un `credentials: "same-origin"`. Skatiet
+> [`docs/dashboard_usage.md`](dashboard_usage.md) sadaļu “CSRF” par
+> ārējiem CLI/`curl` klientiem (sesijas autentifikācija + CSRF cookie).
+
+## Simulatora profilu galapunkti (Phase 7, Task 4)
+
+Lai dashboarda simulatoru darba lapa varētu izveidot un labot
+simulatora profilu (līdzvērtīgs `SimulatorScenario` ierakstam plus
+piesaistītajām metrikām), tika pievienoti divi šauri rakstīšanas
+galapunkti virs esošās lasīšanas API:
+
+| Metode | URL                                            | Apraksts                                |
+| ------ | ---------------------------------------------- | --------------------------------------- |
+| GET    | `/api/simulator/profiles/`                     | Profilu saraksts                        |
+| POST   | `/api/simulator/profiles/`                     | Izveido jaunu profilu (write-protected) |
+| GET    | `/api/simulator/profiles/<code>/`              | Viena profila detaļas                   |
+| PUT    | `/api/simulator/profiles/<code>/`              | Aizstāj rediģējamos laukus              |
+| PATCH  | `/api/simulator/profiles/<code>/`              | Daļēji atjaunina profilu                |
+
+`GET` paliek publiski lasāms; `POST`, `PUT` un `PATCH` izmanto to pašu
+`simulator.can_control_simulator` atļauju, ko Start/Stop/Run-once
+galapunkti, un atgriež stabilu JSON struktūru (`{"ok": ..., "status":
+..., "message": ..., "field_errors": {...}}`).
+
+Profila JSON ietver:
+
+- `code`, `name`, `description`, `site_code`, `interval_seconds`,
+  `default_status`, `is_active`, `last_run_at`;
+- `devices[]` ar piesaistītajām ierīcēm un katras ierīces metrikām
+  (atslēga, etiķete, mērvienība, `min_value`/`base_value`/`max_value`,
+  `noise_amplitude`, `is_enabled`, `sort_order`).
+
+**Validācija** (atgriež `400 Bad Request` ar `field_errors`):
+
+- `code` ir obligāts un unikāls.
+- `interval_seconds` ir pozitīvs vesels skaitlis.
+- Katrai metrikai jābūt `metric_key` un mērvienībai (`unit` no profila
+  vai no `MetricDefinition`).
+- `min_value < max_value`.
+- `base_value` atrodas intervālā `[min_value, max_value]`.
+- `noise_amplitude >= 0`.
+- Vismaz vienai metrikai jābūt `is_enabled=true` (kad metriku saraksts
+  tiek nosūtīts).
+
+**Atļauju trūkuma atbildes:** `401` anonīmiem lietotājiem un `403`
+autentificētiem bez atļaujas, ar latviešu kļūdas tekstu un tukšu
+`field_errors`. CSRF aizsardzība darbojas tāda pati kā vadības
+galapunktiem.
 
 ## Veselības pārbaude
 
@@ -444,7 +608,13 @@ curl "http://127.0.0.1:8000/api/overview/simulator/?scenario=default_demo"
 curl "http://127.0.0.1:8000/api/overview/simulator/?status=failed"
 ```
 
-> **Piezīme:** simulatora `start` / `stop` API darbības **netiek** ieviestas šajā fāzē. Simulatora palaišana joprojām notiek caur `python manage.py run_simulator ...`.
+> **Piezīme:** simulatora `start` / `stop` API darbības ir pieejamas
+> sākot ar Phase 7 Task 3A (skatīt iepriekš). Sākot ar Phase 7 Task 4
+> simulatora vadības UI un profila redaktors **vairs neatrodas** uz
+> dashboarda pārskata lapas; tie ir pārvietoti uz atsevišķo
+> `/dashboard/simulator/` darba lapu (`dashboard:simulator` route),
+> savukārt `/api/overview/simulator/` saraksts paliek kā iekšējs
+> diagnostikas galapunkts.
 
 ### `/api/assets/{id-or-code}/summary/`
 
